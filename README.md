@@ -50,9 +50,12 @@ const Sim = {
     this.ui.feedback('Not yet — ' + st.hint, 'info');
     return false;
   },
-  complete(st) {
-    this.score += st.points;
-    this.ui.feedback(st.done, 'good');
+  skip(msg) {                                   // advance a step with no points (safety net so nobody gets stuck)
+    const st = this.step(); this.mistakes.push(msg); this.complete(st, msg);
+  },
+  complete(st, skipMsg) {
+    if (skipMsg) this.ui.feedback(skipMsg, 'bad');
+    else { this.score += st.points; this.ui.feedback(st.done, 'good'); }
     const id = st.id;
     this.stepIdx++;
     if (st.after) st.after(this);
@@ -93,7 +96,7 @@ const SCENARIOS = {
   fire: {
     id: 'fire', title: 'Apartment Fire Escape', timeLimit: 180,
     blurb: 'Smoke, a hot door and a lift. Can you find the safe way out?',
-    start: { x: 0, z: 1.5 },
+    start: { x: 0, z: -1.2 },
     lessons: [
       'Stay low: breathable air is near the floor; smoke kills faster than flames.',
       'Back of hand on the door first. A hot door means fire is behind it — find another exit.',
@@ -101,8 +104,8 @@ const SCENARIOS = {
     ],
     steps: [
       { id: 'crouch', accept: ['crouch'], points: 20,
-        prompt: 'FIRE ALARM! Smoke is banking down from the ceiling. Get LOW — crouch now (key C on desktop).',
-        hint: 'get low under the smoke first (crouch).',
+        prompt: 'FIRE ALARM! Smoke is banking down from the ceiling. Get LOW — crouch now (physically, or press A/B/X/Y on a controller; key C on desktop).',
+        hint: 'get low under the smoke first (crouch: A/B/X/Y button or C key).',
         done: 'Good — cleaner air is near the floor. Stay low while you move.' },
       { id: 'door1_test', accept: ['door1_test'], points: 15,
         prompt: 'Check the LEFT door for heat before opening it: touch the blue TOUCH pad (back of your hand).',
@@ -113,7 +116,7 @@ const SCENARIOS = {
         hint: 'test the right door for heat with its TOUCH pad.',
         done: 'Cool to the touch — it is safer to use.' },
       { id: 'door2_open', accept: ['door2_open'], points: 10,
-        prompt: 'Open the right door with the gold knob. Stay low.',
+        prompt: 'Open the right door with the big gold knob. Stay low.',
         hint: 'open the right door with its gold knob.',
         done: 'Door open. Head down the corridor (click the floor to move).' },
       { id: 'stairs', accept: ['stairs'], points: 15,
@@ -157,7 +160,8 @@ const SCENARIOS = {
       }
       if (s.stepIdx === 0) {
         f.crouchT = ctx.crouching ? (f.crouchT || 0) + dt : 0;
-        if (f.crouchT >= 1) s.action('crouch');
+        if (f.crouchT >= 0.5) s.action('crouch');
+        else if (s.elapsed > 20) s.skip('Crouch skipped — staying low is the #1 way to avoid smoke. (0 pts)');
       }
     }
   },
@@ -173,7 +177,7 @@ const SCENARIOS = {
     ],
     steps: [
       { id: 'crouch', accept: ['crouch'], points: 20,
-        prompt: 'EARTHQUAKE! DROP — get down now. Crouch (key C on desktop).',
+        prompt: 'EARTHQUAKE! DROP — get down now. Crouch (physically, or press A/B/X/Y on a controller; key C on desktop).',
         hint: 'DROP first — get low.',
         done: 'DROP done. Now take cover.' },
       { id: 'shelter', accept: ['shelter'], points: 25,
@@ -181,8 +185,8 @@ const SCENARIOS = {
         hint: 'take COVER under the table (green circle).',
         done: 'COVER done. Protect your head and neck.' },
       { id: 'hold', accept: ['hold'], points: 25,
-        prompt: s => 'HOLD ON — squeeze GRIP (or hold key H) for 5 seconds.  ' + (s.flags.holdT || 0).toFixed(1) + ' / 5.0 s',
-        hint: 'hold on: squeeze grip (or hold H) for 5 seconds.',
+        prompt: s => 'HOLD ON — squeeze GRIP or TRIGGER on a controller (key H on desktop) for 4 seconds.  ' + (s.flags.holdT || 0).toFixed(1) + ' / 4.0 s',
+        hint: 'hold on: squeeze grip or trigger for 4 seconds.',
         after: s => { s.flags.quakeStop = s.elapsed + 4; },
         done: 'Good. Keep holding until the shaking stops.' },
       { id: 'wait', accept: ['quake_end'], points: 0,
@@ -210,11 +214,14 @@ const SCENARIOS = {
       const f = s.flags;
       if (s.stepIdx === 0) {
         f.crouchT = ctx.crouching ? (f.crouchT || 0) + dt : 0;
-        if (f.crouchT >= 1) s.action('crouch');
+        if (f.crouchT >= 0.5) s.action('crouch');
+        else if (s.elapsed > 20) s.skip('DROP skipped — get down first to avoid being thrown off your feet. (0 pts)');
       }
       if (s.stepIdx === 2) {
         f.holdT = ctx.holding ? f.holdT + dt : 0;
-        if (f.holdT >= 5) { f.holdT = 5; s.action('hold'); }
+        f.holdWait = (f.holdWait || 0) + dt;
+        if (f.holdT >= 4) { f.holdT = 4; s.action('hold'); }
+        else if (f.holdWait > 25) s.skip('HOLD ON skipped — protect your head and neck until shaking stops. (0 pts)');
       }
       if (f.shaking && f.quakeStop !== null && s.elapsed >= f.quakeStop) {
         f.shaking = false; f.quakeStop = null; s.action('quake_end');
@@ -231,7 +238,8 @@ if (typeof module !== 'undefined') module.exports = { Sim, SCENARIOS };
 <script id="vr">
 const World = { rects: [], update: null, onDone: null, onMistake: null };
 const Input = { crouchKey: false, holdKey: false, grip: 0 };
-const COMFORT = /[?&]comfort=1/.test(location.search);   // add ?comfort=1 to the URL to reduce shaking
+const COMFORT = /[?&]comfort=1/.test(location.search);   // ?comfort=1 = almost no shaking
+const SHAKE = 0.008;                                      // shake amplitude in metres (raise for stronger shaking)
 let scene, stage, rig, cam, hud, lobbyFloor, ready = false, lastId = 'fire', stand = null, feedT = 0;
 
 /* ---------- tiny helpers ---------- */
@@ -280,7 +288,7 @@ function clampPoint(x, z) {
 }
 function teleportTo(x, z) {
   const c = cam.object3D.position;                    // head offset inside the rig
-  rig.object3D.position.set(x - c.x, 0, z - c.z);
+  rig.object3D.position.x = x - c.x; rig.object3D.position.z = z - c.z;   // keep current height (virtual crouch)
 }
 function bestScore(id) { try { return +localStorage.getItem('prepvr_best_' + id) || 0; } catch (e) { return 0; } }
 function saveBest(id, s) { try { if (s > bestScore(id)) localStorage.setItem('prepvr_best_' + id, s); } catch (e) {} }
@@ -292,13 +300,13 @@ const Snd = {
   alarm() {
     this.stop(); if (!this.ctx) return;
     const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'square'; o.frequency.value = 880; g.gain.value = 0; o.connect(g); g.connect(this.ctx.destination); o.start();
-    let on = false; this.timer = setInterval(() => { on = !on; g.gain.value = on ? 0.03 : 0; }, 450); this.osc = [o];
+    o.type = 'triangle'; o.frequency.value = 760; g.gain.value = 0; o.connect(g); g.connect(this.ctx.destination); o.start();
+    let on = false; this.timer = setInterval(() => { on = !on; g.gain.value = on ? 0.006 : 0; }, 600); this.osc = [o];
   },
   rumble() {
     this.stop(); if (!this.ctx) return;
     const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.value = 42; g.gain.value = 0.25; o.connect(g); g.connect(this.ctx.destination); o.start(); this.osc = [o];
+    o.type = 'sawtooth'; o.frequency.value = 42; g.gain.value = 0.1; o.connect(g); g.connect(this.ctx.destination); o.start(); this.osc = [o];
   },
   stop() { clearInterval(this.timer); this.osc.forEach(o => { try { o.stop(); } catch (e) {} }); this.osc = []; }
 };
@@ -335,7 +343,7 @@ Sim.ui.end = (res) => {
 function showMenu() {
   Snd.stop(); clearStage(); HUD.show(false);
   Sim.state = 'menu'; lobbyFloor.setAttribute('visible', true);
-  rig.object3D.position.set(0, 0, 0);
+  rig.object3D.position.set(0, 0, 0); Input.crouchKey = false;
   World.rects = [{ xMin: -2.5, xMax: 2.5, zMin: -2, zMax: 2.5 }];
   const g = mk('a-entity', { position: '0 1.6 -2.6' });
   panel(g, { w: 4.2, h: 2.9, color: '#0f1a28', op: 0.92, pos: '0 0 -0.02' });
@@ -351,7 +359,7 @@ function showMenu() {
 }
 function buildDebrief(res) {
   clearStage(); HUD.show(false); Snd.stop();
-  lobbyFloor.setAttribute('visible', true); rig.object3D.position.set(0, 0, 0);
+  lobbyFloor.setAttribute('visible', true); rig.object3D.position.set(0, 0, 0); Input.crouchKey = false;
   World.rects = [{ xMin: -2.5, xMax: 2.5, zMin: -2, zMax: 2.5 }];
   const sc = SCENARIOS[res.scenario];
   const g = mk('a-entity', { position: '0 1.6 -2.9' });
@@ -401,8 +409,8 @@ function buildFire() {
   [['door1', -2.5], ['door2', 1.5]].forEach(([id, hx]) => {
     const pivot = mk('a-entity', { position: hx + ' 0 -5' }, W);
     box(pivot, '0.5 1.05 0', [1, 2.1, 0.08], '#7a4b2a');
-    panel(pivot, { w: 0.55, h: 0.22, color: '#2b6cff', pos: '0.5 1.55 0.05', label: 'TOUCH', action: id + '_test' });
-    mk('a-sphere', { radius: 0.05, position: '0.88 1.0 0.08', color: '#e5b93c', class: 'interactive', 'data-action': id + '_open' }, pivot);
+    panel(pivot, { w: 0.9, h: 0.45, color: '#2b6cff', pos: '0.5 1.5 0.06', label: 'TOUCH TO\nTEST HEAT', action: id + '_test', wrap: 12 });
+    mk('a-sphere', { radius: 0.09, position: '0.8 0.95 0.1', color: '#e5b93c', class: 'interactive', 'data-action': id + '_open' }, pivot);
     doors[id] = pivot;
   });
   box(W, '-2 0.03 -4.95', [1, 0.05, 0.02], '#ff6a00', { material: 'color:#ff6a00;emissive:#ff4000;emissiveIntensity:1' }); // glow under hot door
@@ -432,7 +440,7 @@ function buildFire() {
       doors.door2.setAttribute('animation__open', 'property:rotation;to:0 90 0;dur:1200;easing:easeOutQuad');
       World.rects.push({ xMin: -2.2, xMax: 2.2, zMin: -11.4, zMax: -4.5 });
     }
-    if (id === 'stairs') { buildOutside(); }
+    if (id === 'stairs') { Snd.stop(); buildOutside(); }
   };
   World.onMistake = name => {
     if (name === 'door1_open') { burst.setAttribute('visible', true); doors.door1.setAttribute('animation__open', 'property:rotation;to:0 40 0;dur:600'); }
@@ -502,7 +510,7 @@ function startScenario(id) {
   rig.object3D.position.set(sc.start.x, 0, sc.start.z);
   cam.object3D.position.x = 0; cam.object3D.position.z = 0;
   try { const lc = cam.components['look-controls']; lc.yawObject.rotation.y = 0; lc.pitchObject.rotation.x = 0; } catch (e) {}
-  Input.crouchKey = false; stand = null;
+  Input.crouchKey = false; stand = null; rig.object3D.position.y = 0;
   if (id === 'fire') buildFire(); else buildQuake();
   Sim.start(sc);
   HUD.show(true); HUD.prompt(); HUD.stat();
@@ -535,13 +543,16 @@ AFRAME.registerComponent('sim-loop', {
     if (!this.el.is('vr-mode')) {                                    // desktop crouch emulation
       const target = Input.crouchKey ? 0.9 : 1.6;
       o.position.y += (target - o.position.y) * Math.min(1, dt * 8);
+    } else {                                                          // VR: button-toggled virtual crouch lowers the rig
+      const ty = Input.crouchKey ? -0.7 : 0, r = rig.object3D.position;
+      r.y += (ty - r.y) * Math.min(1, dt * 6);
     }
     o.getWorldPosition(this.v);
     const headY = this.v.y;
     if (Sim.state === 'running') {
       if (stand === null) stand = headY > 1.0 ? headY : 1.6;
       if (headY > 1.2 && headY > stand) stand = headY;
-      const crouching = headY < Math.min(1.1, stand * 0.68);
+      const crouching = Input.crouchKey || headY < Math.min(1.1, stand * 0.7);
       Sim.tick(dt, { headY, crouching, holding: Input.holdKey || Input.grip > 0 });
     }
     if (World.rects.length) {                                         // keep player inside the allowed area
@@ -551,10 +562,10 @@ AFRAME.registerComponent('sim-loop', {
     if (World.update) World.update(dt);
     // earthquake: shake the environment (not the camera)
     const s = stage.object3D, shaking = Sim.state === 'running' && Sim.flags.shaking;
-    if (shaking) {
-      const a = COMFORT ? 0.01 : 0.035;
-      s.position.set((Math.random() - 0.5) * 2 * a, (Math.random() - 0.5) * a, (Math.random() - 0.5) * 2 * a);
-      s.rotation.z = (Math.random() - 0.5) * a * 0.4;
+    if (shaking) {                                     // smooth, low-frequency sway (no random jitter)
+      const a = COMFORT ? 0.003 : SHAKE, w = t / 1000;
+      s.position.set(Math.sin(w * 9) * a, 0, Math.sin(w * 7.3 + 1) * a);
+      s.rotation.z = Math.sin(w * 8) * a * 0.15;
     } else if (s.position.lengthSq() > 0) { s.position.set(0, 0, 0); s.rotation.set(0, 0, 0); }
     if (Sim.state === 'running' && Sim.scenario.id === 'quake' && !Sim.flags.shaking) Snd.stop();
     // HUD refresh ~4x/sec
@@ -575,8 +586,10 @@ function init() {
   });
   ['lhand', 'rhand'].forEach(id => {
     const h = document.getElementById(id);
-    h.addEventListener('gripdown', () => { Input.grip++; });
-    h.addEventListener('gripup', () => { Input.grip = Math.max(0, Input.grip - 1); });
+    ['gripdown', 'triggerdown'].forEach(ev => h.addEventListener(ev, () => { Input.grip++; }));
+    ['gripup', 'triggerup'].forEach(ev => h.addEventListener(ev, () => { Input.grip = Math.max(0, Input.grip - 1); }));
+    ['abuttondown', 'bbuttondown', 'xbuttondown', 'ybuttondown', 'thumbstickdown'].forEach(ev =>
+      h.addEventListener(ev, () => { if (Sim.state === 'running') { Input.crouchKey = !Input.crouchKey; HUD.feed(Input.crouchKey ? 'Crouching — press again to stand.' : 'Standing.', 'info'); } }));
   });
   Sim.on((type, d) => {
     if (type === 'done' && World.onDone) World.onDone(d);
@@ -593,7 +606,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <body>
 <div id="info"><b>PrepVR</b> — Desktop: click to interact · <b>WASD</b> move · <b>C</b> crouch · <b>H</b> hold on (earthquake).
-  VR headset: aim + trigger to interact, click the floor to move, physically crouch, grip to hold on.</div>
+  VR headset: aim + trigger to interact, click the floor to move, physically crouch, grip or trigger (hold) to hold on.</div>
 
 <a-scene sim-loop renderer="colorManagement: true" webxr="optionalFeatures: local-floor, bounded-floor" vr-mode-ui="enabled: true" background="color: #0b0f14">
   <a-entity light="type: ambient; color: #ffffff; intensity: 0.7"></a-entity>
