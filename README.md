@@ -1,640 +1,2633 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PrepVR – Emergency Preparedness Trainer</title>
-<!-- PrepVR: "We cannot predict the unexpected, but we can prepare for it."
-     WebXR app built on A-Frame. Works on Meta Quest Browser (Enter VR) and on desktop
-     (mouse + keyboard) for testing. -->
-<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
-<style>
-  #info{position:fixed;left:8px;bottom:8px;z-index:5;max-width:420px;padding:8px 10px;border-radius:8px;
-        background:rgba(0,0,0,.6);color:#cfe;font:12px/1.4 system-ui,sans-serif}
-  #info b{color:#7fe3ff}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+  <title>CALAMITY SIMULATOR - VR Disaster Preparedness & Emergency Training</title>
+  
+  <!-- A-Frame CDN -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <!-- A-Frame Environment Component for rich procedural terrain & sky -->
+  <script src="https://cdn.jsdelivr.net/npm/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
 
-<!-- =====================================================================
-     1. ENGINE – pure logic (no DOM / A-Frame). Scenarios are data + rules.
-     ===================================================================== -->
-<script id="engine">
-const Sim = {
-  state: 'menu', scenario: null, stepIdx: 0, score: 0, elapsed: 0,
-  flags: {}, mistakes: [], seen: {}, listeners: [], result: null,
-  ui: { step() {}, feedback() {}, end() {} },
-
-  on(fn) { this.listeners.push(fn); },
-  emit(type, data) { this.listeners.forEach(fn => fn(type, data)); },
-
-  start(sc) {
-    this.scenario = sc; this.stepIdx = 0; this.score = 0; this.elapsed = 0;
-    this.flags = {}; this.mistakes = []; this.seen = {}; this.result = null;
-    this.state = 'running';
-    if (sc.onStart) sc.onStart(this);
-    this.ui.step(this.step(), this);
-  },
-  step() { return this.scenario.steps[this.stepIdx]; },
-  prompt() { const st = this.step(); return typeof st.prompt === 'function' ? st.prompt(this) : st.prompt; },
-  accepts(st, name) { return typeof st.accept === 'function' ? st.accept(name, this) : st.accept.includes(name); },
-
-  // Every player interaction arrives here as a named action.
-  action(name) {
-    if (this.state !== 'running') return false;
-    this.lastAction = name;
-    const sc = this.scenario, st = this.step();
-    if (this.accepts(st, name)) { this.complete(st); return true; }
-    const m = sc.mistakes && sc.mistakes[name];
-    if (m && (!m.when || m.when(this))) { this.penalize(name, m); return false; }
-    const n = sc.neutral && sc.neutral[name];
-    if (n) { const msg = n(this); if (msg) this.ui.feedback(msg, 'info'); return false; }
-    this.ui.feedback('Not yet — ' + st.hint, 'info');
-    return false;
-  },
-  skip(msg) {                                   // advance a step with no points (safety net so nobody gets stuck)
-    const st = this.step(); this.mistakes.push(msg); this.complete(st, msg);
-  },
-  complete(st, skipMsg) {
-    if (skipMsg) this.ui.feedback(skipMsg, 'bad');
-    else { this.score += st.points; this.ui.feedback(st.done, 'good'); }
-    const id = st.id;
-    this.stepIdx++;
-    if (st.after) st.after(this);
-    this.emit('done', id);
-    if (this.state !== 'running') return;
-    if (this.stepIdx >= this.scenario.steps.length) this.finish(true, 'You completed every step.');
-    else this.ui.step(this.step(), this);
-  },
-  penalize(name, m) {
-    if (this.seen[name]) { this.ui.feedback(m.msg, 'bad'); return; }   // penalise each mistake once
-    this.seen[name] = true;
-    this.score = Math.max(0, this.score - m.penalty);
-    this.mistakes.push(m.msg);
-    this.ui.feedback(m.msg + '  (-' + m.penalty + ')', 'bad');
-    this.emit('mistake', name);
-    if (m.fatal) this.finish(false, m.msg);
-  },
-  tick(dt, ctx) {
-    if (this.state !== 'running') return;
-    this.elapsed += dt;
-    if (this.scenario.tick) this.scenario.tick(this, dt, ctx);
-    if (this.state === 'running' && this.elapsed > this.scenario.timeLimit)
-      this.finish(false, 'Time ran out. In a real emergency, every second counts — practise until the steps are automatic.');
-  },
-  finish(ok, reason) {
-    if (this.state !== 'running') return;
-    this.state = 'done';
-    const s = this.score;
-    const grade = !ok ? 'Did not survive' : s >= 85 ? 'Prepared' : s >= 60 ? 'Almost there' : 'Needs practice';
-    this.result = { ok, reason, score: s, grade, mistakes: this.mistakes.slice(), scenario: this.scenario.id };
-    this.ui.end(this.result);
-    this.emit('end', this.result);
-  }
-};
-
-/* ---------- Scenario definitions (rules, scoring, teaching content) ---------- */
-const SCENARIOS = {
-  fire: {
-    id: 'fire', title: 'Apartment Fire Escape', timeLimit: 180,
-    blurb: 'Smoke, a hot door and a lift. Can you find the safe way out?',
-    start: { x: 0, z: -1.2 },
-    lessons: [
-      'Stay low: breathable air is near the floor; smoke kills faster than flames.',
-      'Back of hand on the door first. A hot door means fire is behind it — find another exit.',
-      'Never use lifts in a fire. Use the stairs, then meet at the assembly point and call 112 (fire: 101).'
-    ],
-    steps: [
-      { id: 'crouch', accept: ['crouch'], points: 20,
-        prompt: 'FIRE ALARM! Smoke is banking down from the ceiling. Get LOW — crouch now (physically, or press A/B/X/Y on a controller; key C on desktop).',
-        hint: 'get low under the smoke first (crouch: A/B/X/Y button or C key).',
-        done: 'Good — cleaner air is near the floor. Stay low while you move.' },
-      { id: 'door1_test', accept: ['door1_test'], points: 15,
-        prompt: 'Check the LEFT door for heat before opening it: touch the blue TOUCH pad (back of your hand).',
-        hint: 'check the left door for heat with its TOUCH pad.',
-        done: 'HOT! Fire is right behind it. Do NOT open it.' },
-      { id: 'door2_test', accept: ['door2_test'], points: 15,
-        prompt: 'Find another way out. Test the RIGHT door the same way.',
-        hint: 'test the right door for heat with its TOUCH pad.',
-        done: 'Cool to the touch — it is safer to use.' },
-      { id: 'door2_open', accept: ['door2_open'], points: 10,
-        prompt: 'Open the right door with the big gold knob. Stay low.',
-        hint: 'open the right door with its gold knob.',
-        done: 'Door open. Head down the corridor (click the floor to move).' },
-      { id: 'stairs', accept: ['stairs'], points: 15,
-        prompt: 'Move down the corridor (click the floor) and take the STAIRS. Never the lift.',
-        hint: 'reach the end of the corridor and take the stairs.',
-        done: 'You are out of the smoke. Well done.' },
-      { id: 'safe1', accept: (n) => n === 'assembly' || n === 'call112', points: 15,
-        prompt: 'You are outside. Do both: go to the ASSEMBLY POINT and CALL 112 on the phone.',
-        hint: 'go to the assembly point and call 112.',
-        after: s => { s.flags.first = s.lastAction; },
-        done: 'Good.' },
-      { id: 'safe2', accept: (n, s) => (n === 'assembly' || n === 'call112') && n !== s.flags.first, points: 10,
-        prompt: (s) => s.flags.first === 'assembly' ? 'Now call emergency services: touch the phone (112).'
-                                                       : 'Now go to the ASSEMBLY POINT and wait for responders.',
-        hint: 'finish the remaining safety step.',
-        done: 'Everyone accounted for and help is on the way.' }
-    ],
-    mistakes: {
-      door1_open:   { penalty: 25, msg: 'You opened a HOT door — a flashover/backdraft can kill instantly. Always test first.' },
-      door2_open:   { penalty: 10, when: s => s.stepIdx < 3, msg: 'Always test a door for heat before opening it.' },
-      elevator:     { penalty: 25, msg: 'Never use the lift in a fire — it can stall or open onto the fire floor.' },
-      extinguisher: { penalty: 10, msg: 'An extinguisher is only for tiny, early fires. With smoke building, evacuate.' }
-    },
-    neutral: {
-      door1_test: s => s.stepIdx > 1 ? 'That door is still hot — leave it shut.' : null,
-      door2_test: s => s.stepIdx > 2 ? null : undefined,
-      door2_open: () => null,
-      stairs: () => null
-    },
-    onStart(s) { s.flags.exposure = 0; s.flags.smokeBottom = 2.6; s.flags.first = null; },
-    tick(s, dt, ctx) {
-      const f = s.flags;
-      f.smokeBottom = Math.max(0.6, 2.6 - 0.02 * s.elapsed);
-      f.inSmoke = s.stepIdx <= 4;
-      if (f.inSmoke) {
-        if (ctx.headY > f.smokeBottom) {
-          f.exposure += dt;
-          if (f.exposure > 4 && !f.warned) { f.warned = true; s.ui.feedback('Smoke is filling your lungs — get lower and move faster!', 'bad'); }
-          if (f.exposure > 15) { s.finish(false, 'You breathed in too much smoke. Staying low keeps you under the toxic layer.'); return; }
-        } else { f.exposure = Math.max(0, f.exposure - dt * 0.5); if (f.exposure < 1) f.warned = false; }
-      }
-      if (s.stepIdx === 0) {
-        f.crouchT = ctx.crouching ? (f.crouchT || 0) + dt : 0;
-        if (f.crouchT >= 0.5) s.action('crouch');
-        else if (s.elapsed > 20) s.skip('Crouch skipped — staying low is the #1 way to avoid smoke. (0 pts)');
-      }
+  <style>
+    :root {
+      --bg-dark: #0a0e17;
+      --panel-bg: rgba(14, 22, 38, 0.92);
+      --panel-border: rgba(0, 229, 255, 0.4);
+      --accent-cyan: #00e5ff;
+      --accent-orange: #ff9100;
+      --accent-red: #ff3d00;
+      --accent-green: #00e676;
+      --accent-yellow: #ffd600;
+      --text-main: #f0f6fc;
+      --text-muted: #8b9bb4;
+      --font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     }
-  },
 
-  quake: {
-    id: 'quake', title: 'Earthquake: Drop, Cover, Hold On', timeLimit: 150,
-    blurb: 'The room starts shaking. Shelter, hold on, then evacuate safely.',
-    start: { x: 0, z: 1.5 },
-    lessons: [
-      'DROP, COVER, HOLD ON: get down, get under sturdy furniture, and hold until the shaking stops.',
-      'Stay away from windows, shelves and heavy objects. Doorways are NOT the safest place.',
-      'After shaking: shut off gas, expect aftershocks, use stairs (never lifts), and move to open ground.'
-    ],
-    steps: [
-      { id: 'crouch', accept: ['crouch'], points: 20,
-        prompt: 'EARTHQUAKE! DROP — get down now. Crouch (physically, or press A/B/X/Y on a controller; key C on desktop).',
-        hint: 'DROP first — get low.',
-        done: 'DROP done. Now take cover.' },
-      { id: 'shelter', accept: ['shelter'], points: 25,
-        prompt: 'COVER — get under the sturdy table: click the green COVER circle.',
-        hint: 'take COVER under the table (green circle).',
-        done: 'COVER done. Protect your head and neck.' },
-      { id: 'hold', accept: ['hold'], points: 25,
-        prompt: s => 'HOLD ON — squeeze GRIP or TRIGGER on a controller (key H on desktop) for 4 seconds.  ' + (s.flags.holdT || 0).toFixed(1) + ' / 4.0 s',
-        hint: 'hold on: squeeze grip or trigger for 4 seconds.',
-        after: s => { s.flags.quakeStop = s.elapsed + 4; },
-        done: 'Good. Keep holding until the shaking stops.' },
-      { id: 'wait', accept: ['quake_end'], points: 0,
-        prompt: 'Keep holding on… wait for the shaking to stop.',
-        hint: 'wait for the shaking to stop.',
-        done: 'The shaking has stopped. Expect aftershocks.' },
-      { id: 'gas', accept: ['gas'], points: 15,
-        prompt: 'Check for hazards: shut off the GAS VALVE on the left wall.',
-        hint: 'shut off the gas valve (left wall) first.',
-        done: 'Gas off — this prevents post-quake fires.' },
-      { id: 'exit', accept: ['exit'], points: 15,
-        prompt: 'Evacuate: use the EXIT / stairs. Avoid the lift.',
-        hint: 'evacuate through the EXIT.',
-        done: 'Out safely. Move to open ground away from buildings and power lines.' }
-    ],
-    mistakes: {
-      doorway:  { penalty: 20, msg: 'Doorways are not safer in modern buildings, and the door can swing and hit you. Get under sturdy furniture.' },
-      window:   { penalty: 25, msg: 'Stay away from windows — glass shatters and flies.' },
-      elevator: { penalty: 15, msg: 'Never use lifts after an earthquake — they can stall or fail.' },
-      exit:     { penalty: 30, when: s => s.flags.shaking, msg: 'Do not run outside while shaking — most injuries come from falling debris and stumbling.' }
-    },
-    neutral: { shelter: () => null, gas: () => null, hold: () => null, quake_end: () => null },
-    onStart(s) { s.flags.shaking = true; s.flags.quakeStop = null; s.flags.holdT = 0; },
-    tick(s, dt, ctx) {
-      const f = s.flags;
-      if (s.stepIdx === 0) {
-        f.crouchT = ctx.crouching ? (f.crouchT || 0) + dt : 0;
-        if (f.crouchT >= 0.5) s.action('crouch');
-        else if (s.elapsed > 20) s.skip('DROP skipped — get down first to avoid being thrown off your feet. (0 pts)');
-      }
-      if (s.stepIdx === 2) {
-        f.holdT = ctx.holding ? f.holdT + dt : 0;
-        f.holdWait = (f.holdWait || 0) + dt;
-        if (f.holdT >= 4) { f.holdT = 4; s.action('hold'); }
-        else if (f.holdWait > 25) s.skip('HOLD ON skipped — protect your head and neck until shaking stops. (0 pts)');
-      }
-      if (f.shaking && f.quakeStop !== null && s.elapsed >= f.quakeStop) {
-        f.shaking = false; f.quakeStop = null; s.action('quake_end');
-      }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
     }
-  }
-};
-if (typeof module !== 'undefined') module.exports = { Sim, SCENARIOS };
-</script>
 
-<!-- =====================================================================
-     2. VR LAYER – A-Frame components, world builders, input, HUD, audio
-     ===================================================================== -->
-<script id="vr">
-const World = { rects: [], update: null, onDone: null, onMistake: null };
-const Input = { crouchKey: false, holdKey: false, grip: 0 };
-const COMFORT = /[?&]comfort=1/.test(location.search);   // ?comfort=1 = almost no shaking
-const SHAKE = 0.008;                                      // shake amplitude in metres (raise for stronger shaking)
-let scene, stage, rig, cam, hud, lobbyFloor, ready = false, lastId = 'fire', stand = null, feedT = 0;
-
-/* ---------- tiny helpers ---------- */
-function mk(tag, attrs, parent) {
-  const e = document.createElement(tag);
-  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
-  (parent || stage).appendChild(e);
-  const a = attrs && attrs['data-action'];
-  if (a && a !== 'teleport') {
-    e.addEventListener('mouseenter', () => e.setAttribute('material', 'emissive', '#88ffee'));
-    e.addEventListener('mouseleave', () => e.setAttribute('material', 'emissive', '#000000'));
-  }
-  return e;
-}
-function text(parent, value, pos, w, color, extra) {
-  return mk('a-text', Object.assign({ value, position: pos, width: w, align: 'center', color: color || '#fff', 'wrap-count': Math.round(w * 14) }, extra || {}), parent);
-}
-// A flat, optionally clickable, labelled panel.
-function panel(parent, o) {
-  const g = mk('a-entity', { position: o.pos || '0 0 0', rotation: o.rot || '0 0 0' }, parent);
-  const at = { width: o.w, height: o.h, material: `color:${o.color || '#333'};opacity:${o.op || 1};transparent:${o.op ? 'true' : 'false'};side:double` };
-  if (o.action) { at.class = 'interactive'; at['data-action'] = o.action; }
-  const p = mk('a-plane', at, g);
-  if (o.label) text(g, o.label, '0 0 0.02', o.w * 0.92, o.tcolor || '#fff', { 'wrap-count': o.wrap || Math.max(8, Math.round(o.w * 12)) });
-  return p;
-}
-function box(parent, pos, size, color, extra) {
-  return mk('a-box', Object.assign({ position: pos, width: size[0], height: size[1], depth: size[2], color }, extra || {}), parent);
-}
-function floorPlane(parent, w, d, pos, color) {
-  return mk('a-plane', { rotation: '-90 0 0', width: w, height: d, position: pos, color, class: 'interactive', 'data-action': 'teleport' }, parent);
-}
-function clearStage() {
-  while (stage.firstChild) stage.removeChild(stage.firstChild);
-  stage.object3D.position.set(0, 0, 0); stage.object3D.rotation.set(0, 0, 0);
-  World.update = null; World.onDone = null; World.onMistake = null; World.rects = [];
-}
-function clampPoint(x, z) {
-  let best = null, bd = Infinity;
-  for (const r of World.rects) {
-    const cx = Math.min(Math.max(x, r.xMin), r.xMax), cz = Math.min(Math.max(z, r.zMin), r.zMax);
-    const d = (cx - x) ** 2 + (cz - z) ** 2;
-    if (d < bd) { bd = d; best = [cx, cz]; }
-  }
-  return best;
-}
-function teleportTo(x, z) {
-  const c = cam.object3D.position;                    // head offset inside the rig
-  rig.object3D.position.x = x - c.x; rig.object3D.position.z = z - c.z;   // keep current height (virtual crouch)
-}
-function bestScore(id) { try { return +localStorage.getItem('prepvr_best_' + id) || 0; } catch (e) { return 0; } }
-function saveBest(id, s) { try { if (s > bestScore(id)) localStorage.setItem('prepvr_best_' + id, s); } catch (e) {} }
-
-/* ---------- audio (simple synthesized cues; no asset files needed) ---------- */
-const Snd = {
-  ctx: null, osc: [], timer: null,
-  init() { try { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); if (this.ctx.state === 'suspended') this.ctx.resume(); } catch (e) {} },
-  alarm() {
-    this.stop(); if (!this.ctx) return;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'triangle'; o.frequency.value = 760; g.gain.value = 0; o.connect(g); g.connect(this.ctx.destination); o.start();
-    let on = false; this.timer = setInterval(() => { on = !on; g.gain.value = on ? 0.006 : 0; }, 600); this.osc = [o];
-  },
-  rumble() {
-    this.stop(); if (!this.ctx) return;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.value = 42; g.gain.value = 0.1; o.connect(g); g.connect(this.ctx.destination); o.start(); this.osc = [o];
-  },
-  stop() { clearInterval(this.timer); this.osc.forEach(o => { try { o.stop(); } catch (e) {} }); this.osc = []; }
-};
-
-/* ---------- HUD (head-locked) ---------- */
-const HUD = {
-  set(id, key, val) { const e = document.getElementById(id); if (e) e.setAttribute(key, val); },
-  show(v) { hud.setAttribute('visible', v); document.getElementById('hudStat').setAttribute('visible', v); document.getElementById('hudFeedPanel').setAttribute('visible', v); },
-  prompt() {
-    if (Sim.state !== 'running') return;
-    const n = Sim.stepIdx + 1, N = Sim.scenario.steps.length;
-    this.set('hudPrompt', 'value', 'STEP ' + n + '/' + N + ':  ' + Sim.prompt());
-  },
-  stat() {
-    const t = Math.max(0, Math.ceil(Sim.scenario.timeLimit - Sim.elapsed));
-    this.set('hudStat', 'value', 'Score ' + Sim.score + '   Time ' + Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'));
-  },
-  feed(msg, type) {
-    this.set('hudFeed', 'value', msg);
-    this.set('hudFeed', 'color', type === 'good' ? '#7dff9a' : type === 'bad' ? '#ff7b7b' : '#ffe27a');
-    this.set('hudFeedPanel', 'visible', true);
-    feedT = 6;
-  }
-};
-Sim.ui.step = () => HUD.prompt();
-Sim.ui.feedback = (m, t) => HUD.feed(m, t);
-Sim.ui.end = (res) => {
-  saveBest(res.scenario, res.score);
-  HUD.feed(res.ok ? 'Scenario complete!' : 'Scenario failed: ' + res.reason, res.ok ? 'good' : 'bad');
-  setTimeout(() => { if (Sim.state === 'done') buildDebrief(res); }, 3000);
-};
-
-/* ---------- Menu & Debrief ---------- */
-function showMenu() {
-  Snd.stop(); clearStage(); HUD.show(false);
-  Sim.state = 'menu'; lobbyFloor.setAttribute('visible', true);
-  rig.object3D.position.set(0, 0, 0); Input.crouchKey = false;
-  World.rects = [{ xMin: -2.5, xMax: 2.5, zMin: -2, zMax: 2.5 }];
-  const g = mk('a-entity', { position: '0 1.6 -2.6' });
-  panel(g, { w: 4.2, h: 2.9, color: '#0f1a28', op: 0.92, pos: '0 0 -0.02' });
-  text(g, 'PrepVR', '0 1.1 0', 5, '#7fe3ff');
-  text(g, 'We cannot predict the unexpected — but we can prepare for it.', '0 0.75 0', 3.6, '#cfe6ff');
-  [['fire', -1.0], ['quake', 1.0]].forEach(([id, x]) => {
-    const sc = SCENARIOS[id];
-    panel(g, { w: 1.8, h: 0.8, color: id === 'fire' ? '#b8431f' : '#7a5a1f', pos: x + ' 0.1 0', label: sc.title, action: 'start_' + id, wrap: 18 });
-    text(g, sc.blurb, x + ' -0.55 0', 1.7, '#bcd', { 'wrap-count': 28 });
-    text(g, 'Best: ' + bestScore(id) + '/100', x + ' -0.95 0', 1.4, '#7dff9a');
-  });
-  text(g, 'Aim at a card and press the trigger / click', '0 -1.3 0', 3, '#889');
-}
-function buildDebrief(res) {
-  clearStage(); HUD.show(false); Snd.stop();
-  lobbyFloor.setAttribute('visible', true); rig.object3D.position.set(0, 0, 0); Input.crouchKey = false;
-  World.rects = [{ xMin: -2.5, xMax: 2.5, zMin: -2, zMax: 2.5 }];
-  const sc = SCENARIOS[res.scenario];
-  const g = mk('a-entity', { position: '0 1.6 -2.9' });
-  panel(g, { w: 4.8, h: 3.2, color: '#0f1a28', op: 0.94, pos: '0 0 -0.02' });
-  text(g, res.ok ? 'SCENARIO COMPLETE' : 'SCENARIO FAILED', '0 1.35 0', 5, res.ok ? '#7dff9a' : '#ff7b7b');
-  text(g, 'Score ' + res.score + '/100  ·  ' + res.grade, '0 1.0 0', 4, '#ffe27a');
-  if (!res.ok) text(g, res.reason, '0 0.7 0', 4.2, '#ffb0b0', { 'wrap-count': 70 });
-  text(g, 'WHAT WENT WRONG', '-1.2 0.4 0', 2, '#7fe3ff', { 'wrap-count': 30 });
-  mk('a-text', { value: res.mistakes.length ? res.mistakes.map(m => '• ' + m).join('\n\n') : 'No mistakes — well done!',
-    position: '-2.25 0.25 0', width: 2.1, 'wrap-count': 34, align: 'left', anchor: 'left', baseline: 'top', color: '#fff' }, g);
-  text(g, 'KEY LESSONS', '1.2 0.4 0', 2, '#7fe3ff', { 'wrap-count': 30 });
-  mk('a-text', { value: sc.lessons.map(l => '• ' + l).join('\n\n'),
-    position: '0.1 0.25 0', width: 2.1, 'wrap-count': 34, align: 'left', anchor: 'left', baseline: 'top', color: '#fff' }, g);
-  panel(g, { w: 1.3, h: 0.45, color: '#2b6cff', pos: '-1 -1.4 0', label: 'Retry', action: 'retry' });
-  panel(g, { w: 1.3, h: 0.45, color: '#444', pos: '1 -1.4 0', label: 'Menu', action: 'home' });
-}
-
-/* ---------- Scenario world: FIRE ---------- */
-function buildFire() {
-  const W = mk('a-entity', {});
-  floorPlane(W, 8, 9, '0 0 -0.5', '#6b5a48');
-  floorPlane(W, 5, 7, '0 0 -8.5', '#4b525c');
-  const wall = (pos, size, c) => box(W, pos, size, c || '#d9d2c5');
-  wall('-3.25 1.5 -5', [1.5, 3, 0.1]); wall('0 1.5 -5', [3, 3, 0.1]); wall('3.25 1.5 -5', [1.5, 3, 0.1]);
-  wall('-2 2.55 -5', [1, 0.9, 0.1]); wall('2 2.55 -5', [1, 0.9, 0.1]);
-  wall('-4 1.5 -0.5', [0.1, 3, 9]); wall('4 1.5 -0.5', [0.1, 3, 9]); wall('0 1.5 4', [8, 3, 0.1]);
-  mk('a-plane', { rotation: '90 0 0', width: 8, height: 9, position: '0 3 -0.5', color: '#cfcfcf' }, W);
-  wall('-2.5 1.5 -8.5', [0.1, 3, 7], '#b9b3a6'); wall('2.5 1.5 -8.5', [0.1, 3, 7], '#b9b3a6'); wall('0 1.5 -12', [5, 3, 0.1], '#b9b3a6');
-  mk('a-plane', { rotation: '90 0 0', width: 5, height: 7, position: '0 3 -8.5', color: '#bbb' }, W);
-
-  // furniture + fire (sofa corner)
-  box(W, '2.8 0.3 1', [1.8, 0.6, 0.9], '#5b3b5b'); box(W, '0.8 0.2 1.2', [1.0, 0.4, 0.6], '#6e5236');
-  box(W, '-3.9 1.4 1', [0.1, 0.8, 1.4], '#111');
-  for (let i = 0; i < 6; i++) {
-    mk('a-cone', { 'radius-bottom': 0.25, 'radius-top': 0.02, height: 0.9, position: (2.2 + Math.random() * 1.2) + ' 0.95 ' + (0.6 + Math.random() * 0.8),
-      material: 'color:#ff6a00;emissive:#ff4000;emissiveIntensity:1',
-      animation: 'property:scale;from:1 0.8 1;to:1.25 1.5 1.25;dir:alternate;loop:true;dur:' + (250 + i * 70) + ';easing:easeInOutSine' }, W);
-  }
-  mk('a-entity', { light: 'type:point;color:#ff6a1a;intensity:1.3;distance:8', position: '2.5 1.3 1' }, W);
-
-  // extinguisher (a trap: tempting but wrong here)
-  mk('a-cylinder', { radius: 0.1, height: 0.5, position: '-3.7 0.9 -4.8', color: '#d22', class: 'interactive', 'data-action': 'extinguisher' }, W);
-  text(W, 'EXTINGUISHER', '-3.7 1.3 -4.8', 0.8, '#fff');
-
-  // doors: pivot at hinge; panel offset 0.5
-  const doors = {};
-  [['door1', -2.5], ['door2', 1.5]].forEach(([id, hx]) => {
-    const pivot = mk('a-entity', { position: hx + ' 0 -5' }, W);
-    box(pivot, '0.5 1.05 0', [1, 2.1, 0.08], '#7a4b2a');
-    panel(pivot, { w: 0.9, h: 0.45, color: '#2b6cff', pos: '0.5 1.5 0.06', label: 'TOUCH TO\nTEST HEAT', action: id + '_test', wrap: 12 });
-    mk('a-sphere', { radius: 0.09, position: '0.8 0.95 0.1', color: '#e5b93c', class: 'interactive', 'data-action': id + '_open' }, pivot);
-    doors[id] = pivot;
-  });
-  box(W, '-2 0.03 -4.95', [1, 0.05, 0.02], '#ff6a00', { material: 'color:#ff6a00;emissive:#ff4000;emissiveIntensity:1' }); // glow under hot door
-  panel(W, { w: 0.8, h: 0.3, color: '#1f9d4a', pos: '2 2.45 -4.93', label: 'EXIT' });
-
-  // burst of flames if the hot door is opened
-  const burst = mk('a-entity', { visible: false, position: '-2 0 -5' }, W);
-  for (let i = 0; i < 8; i++) mk('a-cone', { 'radius-bottom': 0.3, 'radius-top': 0.02, height: 1.4, position: (Math.random() - 0.5) * 1.2 + ' 1 ' + Math.random() * 0.8,
-    material: 'color:#ff7a00;emissive:#ff4000;emissiveIntensity:1', animation: 'property:scale;from:1 0.8 1;to:1.4 1.7 1.4;dir:alternate;loop:true;dur:' + (200 + i * 40) }, burst);
-
-  // corridor end: stairs vs lift
-  panel(W, { w: 1.4, h: 0.7, color: '#1f9d4a', pos: '-1.4 1.5 -11.93', label: 'STAIRS', action: 'stairs' });
-  panel(W, { w: 0.5, h: 0.7, color: '#777', pos: '1.5 1.4 -11.93', label: 'LIFT', action: 'elevator' });
-
-  // smoke layer (descends over time)
-  const smoke = mk('a-box', { width: 8, depth: 17, height: 1, position: '0 2.5 -4.5',
-    material: 'color:#2b2b2b;opacity:0.62;transparent:true;side:double;depthWrite:false' }, W);
-
-  World.rects = [{ xMin: -3.6, xMax: 3.6, zMin: -4.5, zMax: 3.6 }];
-  World.update = () => {
-    const b = Sim.flags.smokeBottom != null ? Sim.flags.smokeBottom : 2.6, h = 3.2 - b;
-    smoke.object3D.position.y = b + h / 2; smoke.object3D.scale.y = h;
-    smoke.object3D.visible = Sim.flags.inSmoke !== false;
-  };
-  World.onDone = id => {
-    if (id === 'door2_open') {
-      doors.door2.setAttribute('animation__open', 'property:rotation;to:0 90 0;dur:1200;easing:easeOutQuad');
-      World.rects.push({ xMin: -2.2, xMax: 2.2, zMin: -11.4, zMax: -4.5 });
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #000;
+      font-family: var(--font-family);
+      color: var(--text-main);
     }
-    if (id === 'stairs') { Snd.stop(); buildOutside(); }
-  };
-  World.onMistake = name => {
-    if (name === 'door1_open') { burst.setAttribute('visible', true); doors.door1.setAttribute('animation__open', 'property:rotation;to:0 40 0;dur:600'); }
-  };
-  Snd.alarm();
-}
-function buildOutside() {
-  const O = mk('a-entity', {});
-  floorPlane(O, 16, 12, '0 0 -20', '#2f6b3a');
-  mk('a-cylinder', { radius: 1.2, height: 0.04, position: '0 0.02 -21', color: '#2b9bff', class: 'interactive', 'data-action': 'assembly' }, O);
-  text(O, 'ASSEMBLY POINT', '0 1.6 -21', 2.4, '#ffe27a');
-  panel(O, { w: 0.5, h: 0.8, color: '#222', pos: '2.4 1.2 -18', rot: '0 -20 0', label: 'CALL 112', action: 'call112', wrap: 6 });
-  mk('a-sky', { color: '#6aa9dd' }, O);
-  World.rects = [{ xMin: -7.5, xMax: 7.5, zMin: -25.5, zMax: -14.5 }];
-  teleportTo(0, -15.5);
-}
 
-/* ---------- Scenario world: EARTHQUAKE ---------- */
-function buildQuake() {
-  const W = mk('a-entity', {});
-  floorPlane(W, 8, 8, '0 0 0', '#7a6650');
-  const wall = (pos, size) => box(W, pos, size, '#d8d2c8');
-  wall('0 1.5 -4', [8, 3, 0.1]); wall('-4 1.5 0', [0.1, 3, 8]); wall('4 1.5 0', [0.1, 3, 8]); wall('0 1.5 4', [8, 3, 0.1]);
-  mk('a-plane', { rotation: '90 0 0', width: 8, height: 8, position: '0 3 0', color: '#ccc' }, W);
-
-  // window (hazard)
-  box(W, '-2 1.6 -3.96', [1.5, 1.1, 0.06], '#444');
-  panel(W, { w: 1.4, h: 1.0, color: '#8fd3ff', op: 0.5, pos: '-2 1.6 -3.92', label: 'WINDOW', action: 'window', tcolor: '#0b3a55' });
-  // doorway myth (hazard)
-  panel(W, { w: 1.0, h: 2.1, color: '#2a2a2a', pos: '3.93 1.05 -1.5', rot: '0 -90 0', label: 'DOORWAY', action: 'doorway' });
-  // gas valve (hazard to remove)
-  panel(W, { w: 0.5, h: 0.5, color: '#c22', pos: '-3.93 1.3 1.5', rot: '0 90 0', label: 'GAS VALVE', action: 'gas', wrap: 8 });
-  // exit + lift
-  panel(W, { w: 1.0, h: 2.1, color: '#1f9d4a', pos: '1.5 1.05 3.93', rot: '0 180 0', label: 'EXIT / STAIRS', action: 'exit', wrap: 8 });
-  panel(W, { w: 0.4, h: 0.5, color: '#777', pos: '-0.4 1.2 3.93', rot: '0 180 0', label: 'LIFT', action: 'elevator' });
-
-  // sturdy table + cover marker
-  box(W, '0 0.75 -1.5', [1.8, 0.08, 1.0], '#8b5a2b');
-  [[-0.8, -1.95], [0.8, -1.95], [-0.8, -1.05], [0.8, -1.05]].forEach(p => box(W, p[0] + ' 0.37 ' + p[1], [0.08, 0.75, 0.08], '#8b5a2b'));
-  mk('a-circle', { rotation: '-90 0 0', radius: 0.6, position: '0 0.02 -1.5', color: '#2ecc71', opacity: 0.6, class: 'interactive', 'data-action': 'shelter',
-    animation: 'property:scale;from:1 1 1;to:1.15 1.15 1;dir:alternate;loop:true;dur:700' }, W);
-  mk('a-text', { value: 'COVER', rotation: '-90 0 0', position: '0 0.04 -1.5', width: 1.6, align: 'center', color: '#fff' }, W);
-
-  // sofa, bookshelf with books that fall
-  box(W, '-2.6 0.3 1', [1.8, 0.6, 0.9], '#3b5b7a');
-  box(W, '3.5 1.0 -3', [0.5, 2, 1.5], '#5a3a1a');
-  for (let i = 0; i < 4; i++) {
-    mk('a-box', { width: 0.3, height: 0.25, depth: 0.2, color: ['#c33', '#36c', '#3a3', '#cc3'][i], position: '3.4 ' + (1.7 + (i % 2) * 0.3) + ' ' + (-3.4 + i * 0.35),
-      animation__fall: 'property:position;to:3.0 0.13 ' + (-2.6 + i * 0.35) + ';dur:900;delay:' + (800 + i * 450) + ';easing:easeInQuad' }, W);
-  }
-  // swinging ceiling lamp
-  const lamp = mk('a-entity', { position: '0 3 0', animation__sway: 'property:rotation;from:-8 0 -8;to:8 0 8;dir:alternate;loop:true;dur:500;easing:easeInOutSine' }, W);
-  mk('a-cylinder', { radius: 0.01, height: 0.5, position: '0 -0.25 0', color: '#222' }, lamp);
-  mk('a-sphere', { radius: 0.18, position: '0 -0.55 0', material: 'color:#fff7c0;emissive:#fff7c0;emissiveIntensity:0.8' }, lamp);
-
-  World.rects = [{ xMin: -3.6, xMax: 3.6, zMin: -3.6, zMax: 3.6 }];
-  World.update = () => { if (!Sim.flags.shaking && lamp.hasAttribute('animation__sway')) { lamp.removeAttribute('animation__sway'); lamp.object3D.rotation.set(0, 0, 0); } };
-  World.onDone = id => { if (id === 'shelter') teleportTo(0, -1.5); };
-  Snd.rumble();
-}
-
-/* ---------- Flow control ---------- */
-function startScenario(id) {
-  const sc = SCENARIOS[id]; lastId = id;
-  clearStage(); Snd.stop();
-  lobbyFloor.setAttribute('visible', false);
-  rig.object3D.position.set(sc.start.x, 0, sc.start.z);
-  cam.object3D.position.x = 0; cam.object3D.position.z = 0;
-  try { const lc = cam.components['look-controls']; lc.yawObject.rotation.y = 0; lc.pitchObject.rotation.x = 0; } catch (e) {}
-  Input.crouchKey = false; stand = null; rig.object3D.position.y = 0;
-  if (id === 'fire') buildFire(); else buildQuake();
-  Sim.start(sc);
-  HUD.show(true); HUD.prompt(); HUD.stat();
-  HUD.feed(sc.title + ' — stay calm and act.', 'info');
-}
-function onAction(name, e) {
-  Snd.init();
-  if (name === 'teleport') {
-    if (Sim.state !== 'running' || !e.detail || !e.detail.intersection) return;
-    const p = e.detail.intersection.point, c = clampPoint(p.x, p.z);
-    if (c) teleportTo(c[0], c[1]);
-    return;
-  }
-  if (name.startsWith('start_')) return startScenario(name.slice(6));
-  if (name === 'retry') return startScenario(lastId);
-  if (name === 'home') return showMenu();
-  Sim.action(name);
-}
-
-/* ---------- A-Frame component: per-frame simulation loop ---------- */
-AFRAME.registerComponent('sim-loop', {
-  init() {
-    this.v = new THREE.Vector3(); this.acc = 0;
-    window.addEventListener('keydown', e => { if (e.repeat) return; const k = e.key.toLowerCase(); if (k === 'c') Input.crouchKey = !Input.crouchKey; if (k === 'h') Input.holdKey = true; });
-    window.addEventListener('keyup', e => { if (e.key.toLowerCase() === 'h') Input.holdKey = false; });
-  },
-  tick(t, dtms) {
-    if (!ready) return;
-    const dt = Math.min(dtms / 1000, 0.1), o = cam.object3D;
-    if (!this.el.is('vr-mode')) {                                    // desktop crouch emulation
-      const target = Input.crouchKey ? 0.9 : 1.6;
-      o.position.y += (target - o.position.y) * Math.min(1, dt * 8);
-    } else {                                                          // VR: button-toggled virtual crouch lowers the rig
-      const ty = Input.crouchKey ? -0.7 : 0, r = rig.object3D.position;
-      r.y += (ty - r.y) * Math.min(1, dt * 6);
+    /* 2D HUD & Overlay UI */
+    #ui-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
-    o.getWorldPosition(this.v);
-    const headY = this.v.y;
-    if (Sim.state === 'running') {
-      if (stand === null) stand = headY > 1.0 ? headY : 1.6;
-      if (headY > 1.2 && headY > stand) stand = headY;
-      const crouching = Input.crouchKey || headY < Math.min(1.1, stand * 0.7);
-      Sim.tick(dt, { headY, crouching, holding: Input.holdKey || Input.grip > 0 });
-    }
-    if (World.rects.length) {                                         // keep player inside the allowed area
-      const c = clampPoint(this.v.x, this.v.z);
-      if (c) { rig.object3D.position.x += c[0] - this.v.x; rig.object3D.position.z += c[1] - this.v.z; }
-    }
-    if (World.update) World.update(dt);
-    // earthquake: shake the environment (not the camera)
-    const s = stage.object3D, shaking = Sim.state === 'running' && Sim.flags.shaking;
-    if (shaking) {                                     // smooth, low-frequency sway (no random jitter)
-      const a = COMFORT ? 0.003 : SHAKE, w = t / 1000;
-      s.position.set(Math.sin(w * 9) * a, 0, Math.sin(w * 7.3 + 1) * a);
-      s.rotation.z = Math.sin(w * 8) * a * 0.15;
-    } else if (s.position.lengthSq() > 0) { s.position.set(0, 0, 0); s.rotation.set(0, 0, 0); }
-    if (Sim.state === 'running' && Sim.scenario.id === 'quake' && !Sim.flags.shaking) Snd.stop();
-    // HUD refresh ~4x/sec
-    this.acc += dt;
-    if (this.acc > 0.25 && Sim.state === 'running') { this.acc = 0; HUD.prompt(); HUD.stat(); }
-    if (feedT > 0) { feedT -= dt; if (feedT <= 0) HUD.set('hudFeedPanel', 'visible', false); }
-  }
-});
 
-function init() {
-  scene = document.querySelector('a-scene'); stage = document.getElementById('stage');
-  rig = document.getElementById('rig'); cam = document.getElementById('cam'); hud = document.getElementById('hud');
-  lobbyFloor = document.getElementById('lobbyFloor');
-  scene.addEventListener('click', e => {
-    let t = e.target;
-    while (t && t !== scene && !(t.dataset && t.dataset.action)) t = t.parentNode;
-    if (t && t.dataset && t.dataset.action) onAction(t.dataset.action, e);
-  });
-  ['lhand', 'rhand'].forEach(id => {
-    const h = document.getElementById(id);
-    ['gripdown', 'triggerdown'].forEach(ev => h.addEventListener(ev, () => { Input.grip++; }));
-    ['gripup', 'triggerup'].forEach(ev => h.addEventListener(ev, () => { Input.grip = Math.max(0, Input.grip - 1); }));
-    ['abuttondown', 'bbuttondown', 'xbuttondown', 'ybuttondown', 'thumbstickdown'].forEach(ev =>
-      h.addEventListener(ev, () => { if (Sim.state === 'running') { Input.crouchKey = !Input.crouchKey; HUD.feed(Input.crouchKey ? 'Crouching — press again to stand.' : 'Standing.', 'info'); } }));
-  });
-  Sim.on((type, d) => {
-    if (type === 'done' && World.onDone) World.onDone(d);
-    if (type === 'mistake' && World.onMistake) World.onMistake(d);
-  });
-  ready = true; showMenu();
-}
-document.addEventListener('DOMContentLoaded', () => {
-  const s = document.querySelector('a-scene');
-  if (s.hasLoaded) init(); else s.addEventListener('loaded', init);
-});
-</script>
+    .interactive-ui {
+      pointer-events: auto;
+    }
+
+    /* Top HUD Bar */
+    #hud-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 24px;
+      background: linear-gradient(180deg, rgba(5, 10, 20, 0.85) 0%, rgba(5, 10, 20, 0) 100%);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+
+    .brand-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-red), var(--accent-orange));
+      color: #fff;
+      font-weight: 900;
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      box-shadow: 0 0 12px rgba(255, 61, 0, 0.6);
+    }
+
+    .brand-text h1 {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #fff;
+      text-transform: uppercase;
+    }
+
+    .brand-text p {
+      font-size: 11px;
+      color: var(--accent-cyan);
+      letter-spacing: 1px;
+    }
+
+    .hud-stats {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .stat-pill {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(8px);
+    }
+
+    .stat-pill span.val {
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+
+    /* Objective HUD Banner */
+    #hud-objective {
+      position: absolute;
+      top: 75px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--panel-bg);
+      border: 1px solid var(--accent-cyan);
+      padding: 10px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0, 229, 255, 0.25);
+      max-width: 600px;
+      text-align: center;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s ease;
+      display: none;
+    }
+
+    #hud-objective .title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-orange);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 2px;
+    }
+
+    #hud-objective .task {
+      font-size: 14px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    /* Warning Toast Banner */
+    #emergency-alert-banner {
+      position: absolute;
+      top: 135px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 61, 0, 0.9);
+      border: 2px solid #ffffff;
+      color: #ffffff;
+      padding: 12px 30px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      display: none;
+      animation: alertPulse 1s infinite alternate;
+      box-shadow: 0 0 30px rgba(255, 61, 0, 0.8);
+      z-index: 105;
+      text-align: center;
+    }
+
+    @keyframes alertPulse {
+      0% { transform: translateX(-50%) scale(0.98); opacity: 0.85; }
+      100% { transform: translateX(-50%) scale(1.03); opacity: 1; }
+    }
+
+    /* Bottom HUD Bar & Quick Controls */
+    #hud-bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 20px 24px;
+      background: linear-gradient(0deg, rgba(5, 10, 20, 0.85) 0%, rgba(5, 10, 20, 0) 100%);
+    }
+
+    .key-hints {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      max-width: 70%;
+    }
+
+    .key-tag {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .key-tag kbd {
+      background: rgba(0, 229, 255, 0.2);
+      color: var(--accent-cyan);
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 229, 255, 0.4);
+      font-family: monospace;
+    }
+
+    .hud-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      background: rgba(0, 229, 255, 0.15);
+      border: 1px solid var(--accent-cyan);
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+      text-transform: uppercase;
+      backdrop-filter: blur(6px);
+    }
+
+    .btn:hover {
+      background: var(--accent-cyan);
+      color: #050d1a;
+      box-shadow: 0 0 15px rgba(0, 229, 255, 0.5);
+      transform: translateY(-2px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-danger {
+      border-color: var(--accent-red);
+      background: rgba(255, 61, 0, 0.2);
+    }
+    .btn-danger:hover {
+      background: var(--accent-red);
+      color: #fff;
+      box-shadow: 0 0 15px rgba(255, 61, 0, 0.6);
+    }
+
+    .btn-warning {
+      border-color: var(--accent-orange);
+      background: rgba(255, 145, 0, 0.2);
+    }
+    .btn-warning:hover {
+      background: var(--accent-orange);
+      color: #050d1a;
+      box-shadow: 0 0 15px rgba(255, 145, 0, 0.6);
+    }
+
+    .btn-success {
+      border-color: var(--accent-green);
+      background: rgba(0, 230, 118, 0.2);
+    }
+    .btn-success:hover {
+      background: var(--accent-green);
+      color: #050d1a;
+      box-shadow: 0 0 15px rgba(0, 230, 118, 0.6);
+    }
+
+    /* Modal Windows (Menu, Report, Learning, Settings) */
+    .modal-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(4, 8, 16, 0.88);
+      backdrop-filter: blur(12px);
+      z-index: 200;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      width: 90%;
+      max-width: 820px;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 229, 255, 0.15);
+      overflow: hidden;
+      animation: modalSlide 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes modalSlide {
+      from { transform: translateY(30px) scale(0.96); opacity: 0; }
+      to { transform: translateY(0) scale(1); opacity: 1; }
+    }
+
+    .modal-header {
+      padding: 18px 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .modal-header h2 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .modal-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .modal-footer {
+      padding: 16px 24px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    /* Disaster Scenario Selection Cards */
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
+    }
+
+    .scenario-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 18px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .scenario-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--accent-cyan);
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+
+    .scenario-card:hover {
+      border-color: var(--accent-cyan);
+      background: rgba(0, 229, 255, 0.06);
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    .scenario-card:hover::before {
+      opacity: 1;
+    }
+
+    .scenario-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .scenario-icon {
+      font-size: 24px;
+    }
+
+    .scenario-difficulty {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .diff-beginner { background: rgba(0, 230, 118, 0.2); color: var(--accent-green); border: 1px solid var(--accent-green); }
+    .diff-intermediate { background: rgba(255, 145, 0, 0.2); color: var(--accent-orange); border: 1px solid var(--accent-orange); }
+    .diff-advanced { background: rgba(255, 61, 0, 0.2); color: var(--accent-red); border: 1px solid var(--accent-red); }
+
+    .scenario-card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #fff;
+    }
+
+    .scenario-card p {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+
+    .scenario-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 8px;
+    }
+
+    /* Decision Popup (Overlay mirror for 2D desktop mode) */
+    #decision-overlay {
+      position: absolute;
+      bottom: 90px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--panel-bg);
+      border: 2px solid var(--accent-orange);
+      border-radius: 12px;
+      padding: 20px 26px;
+      width: 90%;
+      max-width: 640px;
+      box-shadow: 0 0 40px rgba(255, 145, 0, 0.35);
+      z-index: 120;
+      display: none;
+      backdrop-filter: blur(12px);
+      animation: modalSlide 0.3s ease;
+    }
+
+    #decision-overlay h3 {
+      font-size: 13px;
+      color: var(--accent-orange);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 6px;
+    }
+
+    #decision-overlay .prompt-text {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 16px;
+      line-height: 1.4;
+    }
+
+    .choices-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .choice-btn {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      padding: 12px 16px;
+      color: #fff;
+      text-align: left;
+      font-size: 13.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.2s ease;
+    }
+
+    .choice-btn:hover {
+      background: rgba(0, 229, 255, 0.2);
+      border-color: var(--accent-cyan);
+      transform: translateX(4px);
+    }
+
+    .choice-btn .choice-key {
+      background: rgba(0, 0, 0, 0.4);
+      color: var(--accent-cyan);
+      font-weight: 700;
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 229, 255, 0.4);
+    }
+
+    /* Decision Feedback Box */
+    #feedback-box {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: none;
+      line-height: 1.4;
+    }
+    #feedback-box.correct {
+      background: rgba(0, 230, 118, 0.15);
+      border: 1px solid var(--accent-green);
+      color: #d7ffec;
+    }
+    #feedback-box.incorrect {
+      background: rgba(255, 61, 0, 0.15);
+      border: 1px solid var(--accent-red);
+      color: #ffd9d6;
+    }
+
+    /* Performance Report Styling */
+    .report-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .score-circle-card {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+
+    .score-big {
+      font-size: 48px;
+      font-weight: 900;
+      color: var(--accent-cyan);
+      line-height: 1;
+      margin: 10px 0;
+    }
+
+    .score-grade {
+      font-size: 14px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 12px;
+      letter-spacing: 1px;
+    }
+
+    .stats-breakdown {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    .stat-row {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px 14px;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    .stat-row span.label {
+      color: var(--text-muted);
+    }
+    .stat-row span.val {
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .lesson-section {
+      background: rgba(0, 229, 255, 0.05);
+      border-left: 3px solid var(--accent-cyan);
+      padding: 14px;
+      border-radius: 0 6px 6px 0;
+      margin-top: 16px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* Learning Centre Tabs */
+    .tabs-nav {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      margin-bottom: 16px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active, .tab-btn:hover {
+      color: #fff;
+      background: rgba(0, 229, 255, 0.15);
+    }
+
+    .tab-content {
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: #d1d5db;
+    }
+
+    .tab-content h4 {
+      color: var(--accent-cyan);
+      margin: 14px 0 6px 0;
+      font-size: 15px;
+    }
+
+    .tab-content ul {
+      margin-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    .tab-content li {
+      margin-bottom: 6px;
+    }
+
+    /* Settings Rows */
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .setting-label {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .setting-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    select, input[type="range"] {
+      background: #0f172a;
+      border: 1px solid var(--panel-border);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    /* VR Comfort Vignette Effect */
+    #vr-vignette {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 50;
+      box-shadow: inset 0 0 100px 30px rgba(0,0,0,0.85);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    /* Crosshair for Desktop Mode */
+    #desktop-crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      pointer-events: none;
+      z-index: 90;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #desktop-crosshair::before, #desktop-crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(0, 229, 255, 0.8);
+    }
+    #desktop-crosshair::before { width: 10px; height: 2px; }
+    #desktop-crosshair::after { width: 2px; height: 10px; }
+
+    /* Interactive Raycast Reticle Highlight */
+    .crosshair-hover #desktop-crosshair::before,
+    .crosshair-hover #desktop-crosshair::after {
+      background: var(--accent-orange) !important;
+      transform: scale(1.6);
+    }
+
+    /* Achievements Grid */
+    .achievements-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .achieve-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 14px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      opacity: 0.5;
+      transition: all 0.3s ease;
+    }
+
+    .achieve-card.unlocked {
+      opacity: 1;
+      border-color: var(--accent-yellow);
+      background: rgba(255, 214, 0, 0.08);
+    }
+
+    .achieve-icon {
+      font-size: 26px;
+    }
+
+    .achieve-info h4 {
+      font-size: 13px;
+      color: #fff;
+      margin-bottom: 2px;
+    }
+
+    .achieve-info p {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.2);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(0, 229, 255, 0.3);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 229, 255, 0.6);
+    }
+  </style>
 </head>
-
 <body>
-<div id="info"><b>PrepVR</b> — Desktop: click to interact · <b>WASD</b> move · <b>C</b> crouch · <b>H</b> hold on (earthquake).
-  VR headset: aim + trigger to interact, click the floor to move, physically crouch, grip or trigger (hold) to hold on.</div>
 
-<a-scene sim-loop renderer="colorManagement: true" webxr="optionalFeatures: local-floor, bounded-floor" vr-mode-ui="enabled: true" background="color: #0b0f14">
-  <a-entity light="type: ambient; color: #ffffff; intensity: 0.7"></a-entity>
-  <a-entity light="type: directional; color: #ffffff; intensity: 0.7" position="-1 4 2"></a-entity>
-  <a-entity id="lobbyFloor"><a-plane rotation="-90 0 0" width="30" height="30" color="#131c28"></a-plane></a-entity>
+  <!-- VR Comfort Vignette overlay -->
+  <div id="vr-vignette"></div>
 
-  <a-entity id="rig" position="0 0 0">
-    <a-entity id="cam" camera look-controls wasd-controls="acceleration: 25" position="0 1.6 0">
-      <!-- head-locked HUD -->
-      <a-entity id="hud" position="0 -0.34 -1.1" visible="false">
-        <a-plane width="1.35" height="0.26" material="color:#000;opacity:0.6;transparent:true" position="0 0 -0.002"></a-plane>
-        <a-text id="hudPrompt" value="" align="center" width="1.25" wrap-count="52" color="#ffffff"></a-text>
+  <!-- Desktop First-Person Crosshair -->
+  <div id="desktop-crosshair"></div>
+
+  <!-- 2D Screen Overlay HUD System -->
+  <div id="ui-container">
+    <!-- Top HUD: Branding, Session Status, Health/Safety -->
+    <div id="hud-top">
+      <div class="brand-title">
+        <div class="brand-badge">SimVR 2.0</div>
+        <div class="brand-text">
+          <h1>CALAMITY SIMULATOR</h1>
+          <p>"Prepare for the Unexpected."</p>
+        </div>
+      </div>
+
+      <div class="hud-stats">
+        <div class="stat-pill" id="hud-scenario-name">
+          <span>SCENARIO:</span>
+          <span class="val" id="hud-cur-scenario">COMMAND CENTER</span>
+        </div>
+        <div class="stat-pill">
+          <span>SAFETY SCORE:</span>
+          <span class="val" id="hud-cur-score">100%</span>
+        </div>
+        <div class="stat-pill">
+          <span>TIME:</span>
+          <span class="val" id="hud-cur-time">00:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Objective Card -->
+    <div id="hud-objective">
+      <div class="title" id="obj-title">PRIMARY OBJECTIVE</div>
+      <div class="task" id="obj-task">Welcome Trainee. Select an emergency scenario to begin preparedness drills.</div>
+    </div>
+
+    <!-- Flashing Emergency Alert -->
+    <div id="emergency-alert-banner">
+      ⚠️ EMERGENCY ALARM DETECTED ⚠️
+    </div>
+
+    <!-- Bottom HUD: Keybind reminders & Quick Action Buttons -->
+    <div id="hud-bottom">
+      <div class="key-hints">
+        <div class="key-tag"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+        <div class="key-tag"><kbd>Mouse</kbd> Look</div>
+        <div class="key-tag"><kbd>E</kbd> or <kbd>Left Click</kbd> Interact / Trigger</div>
+        <div class="key-tag"><kbd>ESC</kbd> Menu / Pause</div>
+        <div class="key-tag"><kbd>F</kbd> Fullscreen</div>
+        <div class="key-tag"><kbd>Quest 3S</kbd> Laser Ray + Trigger / Thumbsticks</div>
+      </div>
+
+      <div class="hud-actions interactive-ui">
+        <button class="btn" id="btn-quick-menu" onclick="App.openModal('main-menu-modal')">
+          📋 Menu
+        </button>
+        <button class="btn btn-warning" id="btn-quick-learn" onclick="App.openModal('learning-modal')">
+          📖 Learning
+        </button>
+        <button class="btn" id="btn-quick-settings" onclick="App.openModal('settings-modal')">
+          ⚙️ Settings
+        </button>
+        <button class="btn btn-danger" id="btn-quick-abort" onclick="App.returnToCommandCenter()" style="display:none;">
+          ⏹️ Exit Scenario
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2D Mirror for Decision Making (Desktop Fallback / Enhanced readability) -->
+  <div id="decision-overlay" class="interactive-ui">
+    <h3 id="dec-header">EMERGENCY PROTOCOL DECISION</h3>
+    <div class="prompt-text" id="dec-prompt">An active earthquake is occurring! What is your immediate action?</div>
+    <div class="choices-list" id="dec-choices">
+      <!-- Injected dynamically -->
+    </div>
+    <div id="feedback-box"></div>
+    <div style="margin-top:14px; text-align:right;">
+      <button class="btn btn-success" id="dec-continue-btn" style="display:none;" onclick="App.continueAfterDecision()">
+        Proceed ➔
+      </button>
+    </div>
+  </div>
+
+  <!-- MAIN MENU MODAL -->
+  <div class="modal-overlay active" id="main-menu-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>🛡️ CALAMITY SIMULATOR - CRISIS TRAINING CENTER</h2>
+        <span style="font-size:12px; color:var(--accent-cyan); font-weight:700;">WEBXR & META QUEST 3S READY</span>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--text-muted); font-size:13.5px; margin-bottom:18px; line-height:1.5;">
+          Life is unpredictable, and emergencies can strike anytime without warning. Our VR simulation trains you to make informed decisions under pressure, identify hazards, and respond with confidence rather than panic.
+        </p>
+
+        <h3 style="font-size:14px; color:var(--accent-orange); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px;">
+          Select Training Drill:
+        </h3>
+
+        <div class="scenario-grid">
+          <!-- Scenario 1 -->
+          <div class="scenario-card" onclick="App.startScenario('earthquake')">
+            <div class="scenario-header">
+              <span class="scenario-icon">🏚️</span>
+              <span class="scenario-difficulty diff-beginner">Beginner</span>
+            </div>
+            <h3>1. Severe Earthquake</h3>
+            <p>Indoor classroom/office scenario. Practice immediate "Drop, Cover, and Hold On", avoid shattering window glass, and execute post-tremor building evacuation.</p>
+            <div class="scenario-meta">
+              <span>Time: ~3 mins</span>
+              <span>Objectives: 4 Tasks</span>
+            </div>
+          </div>
+
+          <!-- Scenario 2 -->
+          <div class="scenario-card" onclick="App.startScenario('flood')">
+            <div class="scenario-header">
+              <span class="scenario-icon">🌊</span>
+              <span class="scenario-difficulty diff-intermediate">Intermediate</span>
+            </div>
+            <h3>2. Flash Flood & Inundation</h3>
+            <p>Suburban residential street scenario. Rapidly rising floodwaters, downed power lines, and electrical hazards. Navigate to designated higher ground safely.</p>
+            <div class="scenario-meta">
+              <span>Time: ~3.5 mins</span>
+              <span>Objectives: 4 Tasks</span>
+            </div>
+          </div>
+
+          <!-- Scenario 3 -->
+          <div class="scenario-card" onclick="App.startScenario('fire')">
+            <div class="scenario-header">
+              <span class="scenario-icon">🔥</span>
+              <span class="scenario-difficulty diff-intermediate">Intermediate</span>
+            </div>
+            <h3>3. Indoor Structure Fire</h3>
+            <p>Office complex fire scenario. Heavy smoke layer, sounding alarms, hot door handles, and blocked elevators. Crawl low and reach safe exterior muster point.</p>
+            <div class="scenario-meta">
+              <span>Time: ~3.5 mins</span>
+              <span>Objectives: 5 Tasks</span>
+            </div>
+          </div>
+
+          <!-- Scenario 4 -->
+          <div class="scenario-card" onclick="App.startScenario('cyclone')">
+            <div class="scenario-header">
+              <span class="scenario-icon">🌪️</span>
+              <span class="scenario-difficulty diff-advanced">Advanced</span>
+            </div>
+            <h3>4. Cyclone & Severe Gale</h3>
+            <p>Destructive high-velocity cyclone. Extreme winds, airborne debris, failing windows. Secure emergency battery radio and shelter inside an interior windowless room.</p>
+            <div class="scenario-meta">
+              <span>Time: ~4 mins</span>
+              <span>Objectives: 4 Tasks</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="App.openModal('instructions-modal')">🎮 Controls & Guide</button>
+        <button class="btn" onclick="App.openModal('achievements-modal')">🏆 Achievements</button>
+        <button class="btn" onclick="App.openModal('learning-modal')">📚 Learning Centre</button>
+        <button class="btn" onclick="App.openModal('settings-modal')">⚙️ Settings</button>
+        <button class="btn btn-success" onclick="App.closeAllModals()">Enter Simulation ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- INSTRUCTIONS & CONTROLS MODAL -->
+  <div class="modal-overlay" id="instructions-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>🎮 TRAINING INSTRUCTIONS & DUAL CONTROLS</h2>
+      </div>
+      <div class="modal-body">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+          <div>
+            <h4 style="color:var(--accent-cyan); margin-bottom:10px;">🥽 Meta Quest 3S / WebXR Controls</h4>
+            <ul style="list-style:none; line-height:1.9; font-size:13px;">
+              <li>🔘 <strong>Right Trigger:</strong> Select, click, raycast buttons</li>
+              <li>🔘 <strong>Left / Right Thumbsticks:</strong> Smooth movement & 45° snap turns</li>
+              <li>🔘 <strong>A Button:</strong> Confirm / Interact with targeted objects</li>
+              <li>🔘 <strong>B Button:</strong> Back / Toggle Pause Menu</li>
+              <li>🔘 <strong>Grip Buttons:</strong> Grab emergency equipment (radios, extinguishers)</li>
+              <li>🔘 <strong>Y Button:</strong> Show in-game emergency checklist</li>
+            </ul>
+          </div>
+          <div>
+            <h4 style="color:var(--accent-orange); margin-bottom:10px;">🖥️ Windows Desktop Controls</h4>
+            <ul style="list-style:none; line-height:1.9; font-size:13px;">
+              <li>⌨️ <strong>W / A / S / D:</strong> Walk Forward, Left, Backward, Right</li>
+              <li>🖱️ <strong>Mouse:</strong> Look around (360° first-person view)</li>
+              <li>🖱️ <strong>Left Click / E:</strong> Interact with 3D objects & pick up tools</li>
+              <li>⌨️ <strong>Spacebar:</strong> Step over minor obstacles / Jump</li>
+              <li>⌨️ <strong>ESC:</strong> Toggle Main Menu & Pause</li>
+              <li>⌨️ <strong>F:</strong> Toggle Fullscreen Mode</li>
+              <li>⌨️ <strong>H:</strong> Toggle Help Overlay</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="lesson-section" style="margin-top:20px;">
+          <strong>Pro-Tip for VR Trainees:</strong> Point your controller laser at the interactive 3D holographic consoles in the environment or use the floating decision menus. If you feel motion sensitivity, adjust the snap-turn angle and comfort vignette in the Settings panel.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="App.openModal('main-menu-modal')">Back to Menu</button>
+        <button class="btn btn-success" onclick="App.closeAllModals()">Ready to Train</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LEARNING CENTRE MODAL -->
+  <div class="modal-overlay" id="learning-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>📚 DISASTER PREPAREDNESS LEARNING ACADEMY</h2>
+      </div>
+      <div class="modal-body">
+        <div class="tabs-nav">
+          <button class="tab-btn active" onclick="App.switchLearnTab('tab-earthquake')">🏚️ Earthquake</button>
+          <button class="tab-btn" onclick="App.switchLearnTab('tab-flood')">🌊 Flood</button>
+          <button class="tab-btn" onclick="App.switchLearnTab('tab-fire')">🔥 Fire Safety</button>
+          <button class="tab-btn" onclick="App.switchLearnTab('tab-storm')">🌪️ Cyclone / Storm</button>
+          <button class="tab-btn" onclick="App.switchLearnTab('tab-kit')">🎒 72-Hour Survival Kit</button>
+        </div>
+
+        <div id="tab-earthquake" class="tab-content">
+          <h4>The Golden Rule: DROP, COVER, AND HOLD ON</h4>
+          <p>Earthquakes strike with zero notice. Studies across seismic regions prove that running outside during tremors leads to severe injuries from falling facade bricks, glass, and roof tiles.</p>
+          <ul>
+            <li><strong>DROP:</strong> Drop onto your hands and knees immediately so you aren't knocked down.</li>
+            <li><strong>COVER:</strong> Crawl under a sturdy table or desk. Cover your head and neck with your arms if no shelter is available.</li>
+            <li><strong>HOLD ON:</strong> Hold onto your shelter until the violent shaking ceases. Be prepared for it to shift.</li>
+            <li><strong>STAY AWAY FROM WINDOWS:</strong> Glass shatters outward and inward with high projectile velocity.</li>
+            <li><strong>NEVER USE ELEVATORS:</strong> Seismic safety sensors or power grid cutoffs will trap you between floors.</li>
+          </ul>
+        </div>
+
+        <div id="tab-flood" class="tab-content" style="display:none;">
+          <h4>Turn Around, Don't Drown!</h4>
+          <p>Flash floods are among the deadliest natural disasters. Just 15 cm (6 inches) of swiftly moving water can knock an adult off their feet; 30 cm (12 inches) can sweep away a car.</p>
+          <ul>
+            <li><strong>Seek Higher Ground:</strong> Immediately move to second stories, roofs, or designated elevated terrain.</li>
+            <li><strong>Avoid Standing Water:</strong> Flood water often conceals open manholes, sharp debris, raw sewage, and deadly energized electric cables.</li>
+            <li><strong>Disconnect Utilities:</strong> If safe to do so before evacuating, switch off the main electrical breaker and gas lines to prevent fires.</li>
+            <li><strong>Never Drive Through Floods:</strong> The roadbed beneath the murky water may be completely washed away.</li>
+          </ul>
+        </div>
+
+        <div id="tab-fire" class="tab-content" style="display:none;">
+          <h4>Smoke Inhalation & Evacuation Tactics</h4>
+          <p>In structural fires, toxic smoke, carbon monoxide, and superheated gases kill far more people than direct flames.</p>
+          <ul>
+            <li><strong>Get Low and Go:</strong> Toxic smoke rises to the ceiling, leaving a cleaner, cooler layer of breathable air 30–60 cm above the floor. Crawl underneath smoke.</li>
+            <li><strong>Test Doors Before Opening:</strong> Touch the door handle or frame with the back of your hand. If hot, fire is on the other side—do not open it!</li>
+            <li><strong>Use Fire Extinguishers (PASS Method):</strong> Pull pin, Aim nozzle at base of flame, Squeeze trigger, Sweep side-to-side.</li>
+            <li><strong>Never Return Inside:</strong> Once evacuated to the external assembly muster zone, remain there. Never re-enter for pets or belongings.</li>
+          </ul>
+        </div>
+
+        <div id="tab-storm" class="tab-content" style="display:none;">
+          <h4>Severe Tropical Cyclone & Gale Defense</h4>
+          <p>Extreme winds exceed 150 km/h, turning everyday items like patio chairs, tree limbs, and corrugated iron into lethal missiles.</p>
+          <ul>
+            <li><strong>Shelter in an Interior Room:</strong> Choose a small, windowless interior room (hallway, closet, or bathroom on the lowest floor).</li>
+            <li><strong>Put as Many Walls Between You and the Outside:</strong> Exterior walls take direct impact from debris.</li>
+            <li><strong>Beware the "Eye of the Storm":</strong> A sudden calm period does not mean the cyclone is over; the other eyewall will strike shortly from the reverse direction.</li>
+            <li><strong>Monitor Battery-Operated Radio:</strong> Cellular cell towers often collapse; analog emergency broadcasts are the most resilient source of guidance.</li>
+          </ul>
+        </div>
+
+        <div id="tab-kit" class="tab-content" style="display:none;">
+          <h4>Essential 72-Hour Go-Bag Checklist</h4>
+          <p>Every household should maintain a packed emergency kit capable of supporting life for at least three days:</p>
+          <ul>
+            <li>💧 <strong>Water:</strong> 4 liters per person per day (drinking and sanitation).</li>
+            <li>🥫 <strong>Food:</strong> Non-perishable, ready-to-eat canned goods and energy bars.</li>
+            <li>🔦 <strong>Lighting:</strong> LED Flashlight, hand-crank lantern, extra batteries.</li>
+            <li>📻 <strong>Communication:</strong> Battery-powered or crank AM/FM NOAA emergency radio.</li>
+            <li>🩹 <strong>First Aid Kit:</strong> Antiseptic wipes, sterile bandages, tourniquet, prescription medications.</li>
+            <li>📑 <strong>Important Documents:</strong> Waterproof pouch containing passports, insurance, and emergency cash.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="App.openModal('main-menu-modal')">Back to Menu</button>
+        <button class="btn btn-success" onclick="App.closeAllModals()">Understood</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACHIEVEMENTS MODAL -->
+  <div class="modal-overlay" id="achievements-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>🏆 DISASTER DRILL ACHIEVEMENTS</h2>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--text-muted); font-size:13px; margin-bottom:16px;">
+          Demonstrate proficiency across crisis scenarios to unlock emergency responder credentials.
+        </p>
+        <div class="achievements-grid" id="achievements-list">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="App.openModal('main-menu-modal')">Back to Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>⚙️ SIMULATOR & COMFORT SETTINGS</h2>
+      </div>
+      <div class="modal-body">
+        <div class="setting-item">
+          <div>
+            <div class="setting-label">Master Sound Effects Volume</div>
+            <div class="setting-desc">Adjust synthesized sirens, thunder, rumble & alerts</div>
+          </div>
+          <input type="range" id="setting-sfx-vol" min="0" max="100" value="80" onchange="App.updateSettings()">
+        </div>
+
+        <div class="setting-item">
+          <div>
+            <div class="setting-label">VR Snap Turning Angle</div>
+            <div class="setting-desc">Comfort rotation angle for VR thumbsticks</div>
+          </div>
+          <select id="setting-snap-turn" onchange="App.updateSettings()">
+            <option value="30">30 Degrees (Gentle)</option>
+            <option value="45" selected>45 Degrees (Standard)</option>
+            <option value="90">90 Degrees (Fast)</option>
+            <option value="smooth">Smooth Continuous Turn</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <div>
+            <div class="setting-label">VR Motion Comfort Vignette</div>
+            <div class="setting-desc">Darkens field of view periphery during movement to prevent nausea</div>
+          </div>
+          <select id="setting-vignette" onchange="App.updateSettings()">
+            <option value="enabled" selected>Enabled (Recommended)</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <div>
+            <div class="setting-label">Desktop Movement Speed</div>
+            <div class="setting-desc">Adjust keyboard walking velocity</div>
+          </div>
+          <select id="setting-move-speed" onchange="App.updateSettings()">
+            <option value="0.12">Slow / Cautious</option>
+            <option value="0.18" selected>Standard Pace</option>
+            <option value="0.25">Brisk Sprint</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <div>
+            <div class="setting-label">Emergency Subtitles & Guidance HUD</div>
+            <div class="setting-desc">Visual text indicators for all audio cues</div>
+          </div>
+          <select id="setting-subtitles" onchange="App.updateSettings()">
+            <option value="on" selected>Always Display (Default)</option>
+            <option value="off">Off (Hardcore)</option>
+          </select>
+        </div>
+
+        <div style="margin-top:20px;">
+          <button class="btn btn-danger" onclick="App.resetProgress()">⚠️ Reset All Trainee Progress & Scores</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-success" onclick="App.closeAllModals()">Save & Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- POST-SCENARIO ASSESSMENT REPORT MODAL -->
+  <div class="modal-overlay" id="assessment-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>📊 TRAINEE EMERGENCY RESPONSE ASSESSMENT</h2>
+        <span class="brand-badge" id="report-scenario-badge">EARTHQUAKE</span>
+      </div>
+      <div class="modal-body">
+        <div class="report-grid">
+          <div class="score-circle-card">
+            <span style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Preparedness Rating</span>
+            <div class="score-big" id="report-score-val">95%</div>
+            <div class="score-grade diff-beginner" id="report-grade-badge">GRADE: S (EXEMPLARY)</div>
+          </div>
+
+          <div class="stats-breakdown">
+            <div class="stat-row">
+              <span class="label">Time Elapsed:</span>
+              <span class="val" id="report-time-val">01:42</span>
+            </div>
+            <div class="stat-row">
+              <span class="label">Critical Decisions Passed:</span>
+              <span class="val" id="report-decisions-val">3 / 3</span>
+            </div>
+            <div class="stat-row">
+              <span class="label">Hazards Avoided:</span>
+              <span class="val" id="report-hazards-val">4 / 4</span>
+            </div>
+            <div class="stat-row">
+              <span class="label">Evacuation Safety Compliance:</span>
+              <span class="val" id="report-compliance-val">100%</span>
+            </div>
+          </div>
+        </div>
+
+        <h4 style="font-size:14px; color:var(--accent-cyan); margin-bottom:8px;">Instructor Evaluation & Feedback</h4>
+        <div class="lesson-section" id="report-feedback-text">
+          Excellent situational awareness. You identified the sturdy desk immediately during the violent shaking phase, protected your vital head/neck regions, avoided the shattering glass windows, and safely evacuated without taking the elevator.
+        </div>
+
+        <div style="margin-top:14px; font-size:12px; color:var(--text-muted);">
+          <strong>Recommended Follow-up:</strong> Review your home family communication plan and verify smoke detector battery reserves.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="App.restartCurrentScenario()">🔄 Retry Scenario</button>
+        <button class="btn btn-success" onclick="App.returnToCommandCenter()">Command Center ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- A-FRAME 3D SCENE -->
+  <a-scene
+    id="main-scene"
+    renderer="antialias: true; colorManagement: true; physicallyCorrectLights: false; highRefreshRate: true;"
+    fog="type: linear; color: #0a0f1d; near: 8; far: 45;"
+    vr-mode-ui="enabled: true">
+
+    <!-- ASSET MANAGEMENT (Procedural and Fallbacks) -->
+    <a-assets timeout="4000">
+      <img id="grid-texture" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23111827'/><path d='M 100 0 L 0 0 0 100' fill='none' stroke='%231f2937' stroke-width='2'/></svg>">
+    </a-assets>
+
+    <!-- PLAYER RIG & CAMERA CONTROLLER -->
+    <a-entity id="rig" position="0 0 0">
+      <!-- Main Head & Desktop Look Camera -->
+      <a-camera
+        id="camera"
+        position="0 1.6 0"
+        look-controls="pointerLockEnabled: false"
+        wasd-controls="acceleration: 25; fly: false;">
+        
+        <!-- Desktop Cursor Raycaster -->
+        <a-cursor
+          id="desktop-cursor"
+          raycaster="objects: .clickable; far: 15;"
+          fuse="false"
+          cursor="rayOrigin: mouse"
+          material="color: #00e5ff; shader: flat; opacity: 0.6"
+          geometry="primitive: ring; radiusInner: 0.003; radiusOuter: 0.006"
+          position="0 0 -0.8">
+        </a-cursor>
+
+        <!-- Dynamic In-VR HUD Plane attached to camera for immersive VR viewing -->
+        <a-entity id="vr-floating-hud" position="0 -0.4 -1" visible="false">
+          <a-plane width="1.2" height="0.25" color="#0a0f1d" opacity="0.85" material="transparent: true">
+            <a-text id="vr-hud-text" value="CALAMITY SIMULATOR | VR HUD" align="center" color="#00e5ff" width="1.8" position="0 0 0.01"></a-text>
+          </a-plane>
+        </a-entity>
+      </a-camera>
+
+      <!-- Meta Quest 3S VR Left Controller -->
+      <a-entity
+        id="left-controller"
+        oculus-touch-controls="hand: left"
+        laser-controls="hand: left"
+        raycaster="objects: .clickable; far: 12; lineColor: #00e5ff; lineOpacity: 0.7;"
+        thumbstick-controls>
       </a-entity>
-      <a-entity id="hudFeedPanel" position="0 0.3 -1.1" visible="false">
-        <a-plane width="1.35" height="0.26" material="color:#000;opacity:0.6;transparent:true" position="0 0 -0.002"></a-plane>
-        <a-text id="hudFeed" value="" align="center" width="1.25" wrap-count="52" color="#ffe27a"></a-text>
+
+      <!-- Meta Quest 3S VR Right Controller -->
+      <a-entity
+        id="right-controller"
+        oculus-touch-controls="hand: right"
+        laser-controls="hand: right"
+        raycaster="objects: .clickable; far: 12; lineColor: #ff9100; lineOpacity: 0.7;"
+        thumbstick-controls>
       </a-entity>
-      <a-text id="hudStat" value="" position="-0.62 0.46 -1.1" width="0.8" color="#9fe" visible="false"></a-text>
     </a-entity>
-    <a-entity id="lhand" laser-controls="hand: left" raycaster="objects: .interactive; far: 40"></a-entity>
-    <a-entity id="rhand" laser-controls="hand: right" raycaster="objects: .interactive; far: 40"></a-entity>
-  </a-entity>
 
-  <!-- mouse pointer for desktop testing -->
-  <a-entity cursor="rayOrigin: mouse" raycaster="objects: .interactive; far: 40"></a-entity>
+    <!-- DYNAMIC LIGHTING -->
+    <a-entity id="ambient-light" light="type: ambient; color: #8ab4f8; intensity: 0.65;"></a-entity>
+    <a-entity id="directional-light" light="type: directional; color: #ffffff; intensity: 0.85; castShadow: false;" position="5 15 8"></a-entity>
+    <a-entity id="strobe-light" light="type: point; color: #ff3d00; intensity: 0; distance: 20;" position="0 3 0"></a-entity>
 
-  <!-- everything scenario-specific is created/destroyed inside #stage -->
-  <a-entity id="stage"></a-entity>
-</a-scene>
+    <!-- ========================================== -->
+    <!-- ENVIRONMENT 0: COMMAND CENTER (MAIN HUB)    -->
+    <!-- ========================================== -->
+    <a-entity id="env-hub" position="0 0 0">
+      <!-- Futuristic circular operations floor -->
+      <a-cylinder position="0 0.05 0" radius="10" height="0.1" color="#0d1527" material="roughness: 0.8; metalness: 0.2"></a-cylinder>
+      <a-ring position="0 0.11 0" rotation="-90 0 0" radius-inner="9.5" radius-outer="10" color="#00e5ff" material="shader: flat; opacity: 0.8"></a-ring>
+      <a-ring position="0 0.11 0" rotation="-90 0 0" radius-inner="4.5" radius-outer="4.7" color="#ff9100" material="shader: flat; opacity: 0.6"></a-ring>
+
+      <!-- Grid terrain floor base -->
+      <a-plane position="0 0 0" rotation="-90 0 0" width="80" height="80" color="#080c14" material="roughness: 0.9"></a-plane>
+
+      <!-- Command Center Holographic Consoles (Clickable in 3D & VR) -->
+      <a-entity position="0 1.2 -3.5">
+        <!-- Center Main Title Hologram -->
+        <a-plane width="3.5" height="1.6" color="#040b17" opacity="0.9" material="transparent: true" class="clickable">
+          <a-text value="CALAMITY SIMULATOR" align="center" color="#00e5ff" width="5.5" position="0 0.45 0.02" font="kelsonsans"></a-text>
+          <a-text value="Select a Disaster Scenario to Begin Preparedness Drill" align="center" color="#ffffff" width="2.4" position="0 0.18 0.02"></a-text>
+          
+          <!-- Quick Interactive Buttons on the 3D Panel for VR Laser Interaction -->
+          <a-entity position="-1.1 -0.3 0.03">
+            <a-box class="clickable" onclick="App.startScenario('earthquake')" width="0.7" height="0.32" depth="0.04" color="#ff9100">
+              <a-text value="1. EARTHQUAKE" align="center" color="#000" width="1.6" position="0 0 0.03"></a-text>
+            </a-box>
+          </a-entity>
+
+          <a-entity position="-0.35 -0.3 0.03">
+            <a-box class="clickable" onclick="App.startScenario('flood')" width="0.7" height="0.32" depth="0.04" color="#00e5ff">
+              <a-text value="2. FLOOD" align="center" color="#000" width="1.6" position="0 0 0.03"></a-text>
+            </a-box>
+          </a-entity>
+
+          <a-entity position="0.4 -0.3 0.03">
+            <a-box class="clickable" onclick="App.startScenario('fire')" width="0.7" height="0.32" depth="0.04" color="#ff3d00">
+              <a-text value="3. FIRE" align="center" color="#fff" width="1.6" position="0 0 0.03"></a-text>
+            </a-box>
+          </a-entity>
+
+          <a-entity position="1.15 -0.3 0.03">
+            <a-box class="clickable" onclick="App.startScenario('cyclone')" width="0.7" height="0.32" depth="0.04" color="#ffd600">
+              <a-text value="4. CYCLONE" align="center" color="#000" width="1.6" position="0 0 0.03"></a-text>
+            </a-box>
+          </a-entity>
+        </a-plane>
+
+        <!-- Hologram Pedestal Base -->
+        <a-cylinder position="0 -1.15 0" radius="0.3" height="1.1" color="#162238" material="metalness: 0.5"></a-cylinder>
+      </a-entity>
+
+      <!-- Decorative Pillars & Architectural Canopy -->
+      <a-cylinder position="-6 3 -4" radius="0.4" height="6" color="#1a263c"></a-cylinder>
+      <a-cylinder position="6 3 -4" radius="0.4" height="6" color="#1a263c"></a-cylinder>
+      <a-box position="0 5.8 -4" width="13" height="0.4" depth="1.2" color="#111c2e"></a-box>
+      <a-text value="CRISIS RESPONSE OPERATIONS DIVISION" align="center" color="#00e5ff" width="6" position="0 5.8 -3.3"></a-text>
+    </a-entity>
+
+    <!-- ========================================== -->
+    <!-- ENVIRONMENT 1: EARTHQUAKE (INDOOR ROOM)    -->
+    <!-- ========================================== -->
+    <a-entity id="env-earthquake" position="0 0 0" visible="false">
+      <!-- Classroom / Office Room Structure -->
+      <!-- Floor -->
+      <a-plane position="0 0.01 -2" rotation="-90 0 0" width="14" height="12" color="#64748b" material="roughness: 0.9"></a-plane>
+      <!-- Ceiling -->
+      <a-plane id="eq-ceiling" position="0 3.6 -2" rotation="90 0 0" width="14" height="12" color="#cbd5e1"></a-plane>
+      <!-- Back Wall with Blackboard -->
+      <a-box position="0 1.8 -7.9" width="14" height="3.6" depth="0.2" color="#e2e8f0">
+        <a-box position="0 0.2 0.15" width="6" height="1.8" depth="0.04" color="#1e293b">
+          <a-text value="SAFETY DRILL: EARTHQUAKE SAFETY" align="center" color="#f8fafc" width="4.5" position="0 0.5 0.03"></a-text>
+          <a-text value="1. Drop onto your knees\n2. Cover head & neck under table\n3. Hold On to legs until shaking stops" align="center" color="#94a3b8" width="3" position="0 -0.1 0.03"></a-text>
+        </a-box>
+      </a-box>
+      <!-- Left Wall with Large Windows (HAZARD) -->
+      <a-box position="-6.9 1.8 -2" rotation="0 90 0" width="12" height="3.6" depth="0.2" color="#e2e8f0">
+        <!-- Windows -->
+        <a-box id="eq-window" class="clickable" onclick="App.onObjectInteracted('eq-window')" position="0 0.4 0.15" width="7" height="1.8" depth="0.05" color="#38bdf8" material="opacity: 0.45; transparent: true">
+          <a-text value="⚠️ HAZARD: Shatterable Glass Window" align="center" color="#ff3d00" width="3" position="0 -0.6 0.04"></a-text>
+        </a-box>
+      </a-box>
+      <!-- Right Wall with Bookshelf & Exit Door -->
+      <a-box position="6.9 1.8 -2" rotation="0 -90 0" width="12" height="3.6" depth="0.2" color="#e2e8f0">
+        <!-- Exit Door -->
+        <a-box id="eq-exit-door" class="clickable" onclick="App.onObjectInteracted('eq-exit-door')" position="2 -0.3 0.15" width="1.2" height="2.2" depth="0.08" color="#15803d">
+          <a-text value="EMERGENCY EXIT" align="center" color="#fff" width="1.8" position="0 0.7 0.06"></a-text>
+        </a-box>
+      </a-box>
+
+      <!-- Furniture Items -->
+      <!-- Sturdy Desk (Safe Shelter Target) -->
+      <a-entity id="eq-sturdy-desk" position="0 0 -3" class="clickable" onclick="App.onObjectInteracted('eq-desk')">
+        <!-- Table Top -->
+        <a-box position="0 0.75 0" width="2" height="0.1" depth="1.2" color="#b45309"></a-box>
+        <!-- 4 Table Legs -->
+        <a-cylinder position="-0.9 0.35 -0.5" radius="0.04" height="0.7" color="#334155"></a-cylinder>
+        <a-cylinder position="0.9 0.35 -0.5" radius="0.04" height="0.7" color="#334155"></a-cylinder>
+        <a-cylinder position="-0.9 0.35 0.5" radius="0.04" height="0.7" color="#334155"></a-cylinder>
+        <a-cylinder position="0.9 0.35 0.5" radius="0.04" height="0.7" color="#334155"></a-cylinder>
+        <!-- Marker Text -->
+        <a-text value="▼ SAFE COVER: Heavy Oak Desk (Click to Drop, Cover, Hold)" align="center" color="#00e676" width="3.5" position="0 1.15 0"></a-text>
+      </a-entity>
+
+      <!-- Falling Bookshelf & Books (Reacting during shaking) -->
+      <a-entity id="eq-bookshelf" position="-5 0 -5">
+        <a-box position="0 1.2 0" width="1.2" height="2.4" depth="0.5" color="#78350f"></a-box>
+        <!-- Shelf tiers -->
+        <a-box id="eq-book-1" position="0 1.6 0.1" width="0.9" height="0.25" depth="0.3" color="#dc2626"></a-box>
+        <a-box id="eq-book-2" position="0 1.1 0.1" width="0.8" height="0.25" depth="0.3" color="#2563eb"></a-box>
+      </a-entity>
+
+      <!-- Hanging Overhead Light (Swinging during quake) -->
+      <a-entity id="eq-hanging-light" position="0 3.5 -3">
+        <a-cylinder position="0 -0.5 0" radius="0.02" height="1" color="#475569"></a-cylinder>
+        <a-box position="0 -1.05 0" width="1.5" height="0.1" depth="0.3" color="#f8fafc">
+          <a-entity light="type: point; color: #fffbeb; intensity: 0.8; distance: 6;"></a-entity>
+        </a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- ========================================== -->
+    <!-- ENVIRONMENT 2: FLOOD (SUBURBAN STREET)     -->
+    <!-- ========================================== -->
+    <a-entity id="env-flood" position="0 0 0" visible="false">
+      <!-- Street Roadway -->
+      <a-plane position="0 0.02 -5" rotation="-90 0 0" width="12" height="30" color="#334155" material="roughness: 0.9"></a-plane>
+      <!-- Sidewalks -->
+      <a-box position="-6.5 0.15 -5" width="2" height="0.3" depth="30" color="#94a3b8"></a-box>
+      <a-box position="6.5 0.15 -5" width="2" height="0.3" depth="30" color="#94a3b8"></a-box>
+
+      <!-- Suburban Houses -->
+      <a-entity position="-10 0 -3">
+        <a-box position="0 2 0" width="5" height="4" depth="6" color="#f1f5f9"></a-box>
+        <a-cone position="0 4.8 0" radius-bottom="4.2" radius-top="0.2" height="1.8" color="#991b1b"></a-cone>
+      </a-entity>
+      <a-entity position="10 0 -4">
+        <a-box position="0 2 0" width="5" height="4" depth="6" color="#fef3c7"></a-box>
+        <a-cone position="0 4.8 0" radius-bottom="4.2" radius-top="0.2" height="1.8" color="#1e3a8a"></a-cone>
+      </a-entity>
+
+      <!-- DANGER: Downed Electric Power Pole & Transformer with Sparks -->
+      <a-entity id="flood-hazard-pole" position="-3 0 -6" class="clickable" onclick="App.onObjectInteracted('flood-hazard')">
+        <a-cylinder position="0 1.2 0" rotation="0 0 65" radius="0.12" height="3.8" color="#713f12"></a-cylinder>
+        <a-box position="1.4 0.3 0" width="0.5" height="0.5" depth="0.5" color="#475569"></a-box>
+        <!-- Spark glow effect -->
+        <a-sphere id="flood-spark" position="1.4 0.4 0" radius="0.15" color="#00e5ff" material="shader: flat; opacity: 0.9">
+          <a-entity light="type: point; color: #00e5ff; intensity: 1.2; distance: 4;"></a-entity>
+        </a-sphere>
+        <a-text value="⚡ EXTREME HAZARD: Submerged High-Voltage Wire!" align="center" color="#ff3d00" width="3" position="0 1.9 0"></a-text>
+      </a-entity>
+
+      <!-- Rising Water Level Plane -->
+      <a-plane
+        id="flood-water-mesh"
+        position="0 0.1 -5"
+        rotation="-90 0 0"
+        width="30"
+        height="35"
+        color="#0284c7"
+        material="roughness: 0.1; metalness: 0.7; opacity: 0.7; transparent: true">
+      </a-plane>
+
+      <!-- Safe High Ground Elevation (Mound / Hilltop Refuge) -->
+      <a-entity id="flood-high-ground" position="0 0 -16" class="clickable" onclick="App.onObjectInteracted('flood-safe-hill')">
+        <a-box position="0 1.5 0" width="8" height="3" depth="6" color="#166534"></a-box>
+        <a-box position="0 3.05 0" width="6" height="0.1" depth="4" color="#22c55e"></a-box>
+        <!-- Sandbags around high ground -->
+        <a-cylinder position="-2.5 3.2 -1.5" rotation="0 0 90" radius="0.18" height="1.2" color="#d97706"></a-cylinder>
+        <a-cylinder position="2.5 3.2 -1.5" rotation="0 0 90" radius="0.18" height="1.2" color="#d97706"></a-cylinder>
+        <a-text value="▲ HIGHER GROUND: Emergency Sandbagged Relief Summit" align="center" color="#ffffff" width="4" position="0 4.2 0"></a-text>
+      </a-entity>
+    </a-entity>
+
+    <!-- ========================================== -->
+    <!-- ENVIRONMENT 3: FIRE EMERGENCY (OFFICE/CORRIDOR) -->
+    <!-- ========================================== -->
+    <a-entity id="env-fire" position="0 0 0" visible="false">
+      <!-- Corridor Floor -->
+      <a-plane position="0 0.01 -6" rotation="-90 0 0" width="5" height="22" color="#475569"></a-plane>
+      <!-- Corridor Ceiling with Smoke Plume -->
+      <a-plane position="0 3.2 -6" rotation="90 0 0" width="5" height="22" color="#1e293b"></a-plane>
+      <a-plane id="fire-smoke-ceiling" position="0 2.7 -6" rotation="90 0 0" width="4.9" height="21.8" color="#0f172a" material="opacity: 0.85; transparent: true"></a-plane>
+
+      <!-- Corridor Walls -->
+      <a-box position="-2.5 1.6 -6" width="0.2" height="3.2" depth="22" color="#cbd5e1"></a-box>
+      <a-box position="2.5 1.6 -6" width="0.2" height="3.2" depth="22" color="#cbd5e1"></a-box>
+
+      <!-- Fire Alarm Pull Station -->
+      <a-box id="fire-pull-station" class="clickable" onclick="App.onObjectInteracted('fire-alarm-pull')" position="-2.35 1.4 -2" width="0.1" height="0.25" depth="0.2" color="#dc2626">
+        <a-text value="FIRE ALARM" align="center" color="#fff" width="1" position="0.08 0 0" rotation="0 90 0"></a-text>
+      </a-box>
+
+      <!-- Elevator (FATAL HAZARD DURING FIRE) -->
+      <a-entity id="fire-elevator" position="-2.35 1.4 -5" class="clickable" onclick="App.onObjectInteracted('fire-elevator')">
+        <a-box width="0.1" height="2.4" depth="1.8" color="#64748b"></a-box>
+        <a-box position="0.06 0 0" width="0.02" height="2.2" depth="1.6" color="#334155"></a-box>
+        <a-text value="❌ ELEVATOR (DO NOT USE IN FIRE)" align="center" color="#ff3d00" width="2" position="0.1 1.4 0" rotation="0 90 0"></a-text>
+      </a-entity>
+
+      <!-- Fire Extinguisher on wall (Interactable Item) -->
+      <a-entity id="fire-extinguisher" position="2.35 1.2 -3" class="clickable" onclick="App.onObjectInteracted('fire-extinguisher')">
+        <a-cylinder radius="0.1" height="0.55" color="#dc2626"></a-cylinder>
+        <a-cylinder position="0 0.3 0" radius="0.04" height="0.15" color="#1e293b"></a-cylinder>
+        <a-text value="🧯 ABC Fire Extinguisher (Click to grab)" align="center" color="#00e5ff" width="2.2" position="-0.1 0.5 0" rotation="0 -90 0"></a-text>
+      </a-entity>
+
+      <!-- Closed Doorway with Heat Signature -->
+      <a-entity id="fire-hot-door" position="0 1.2 -11" class="clickable" onclick="App.onObjectInteracted('fire-door-test')">
+        <a-box width="1.6" height="2.4" depth="0.1" color="#78350f"></a-box>
+        <a-sphere id="fire-door-handle" position="0.6 0 0.08" radius="0.06" color="#f97316"></a-sphere>
+        <a-text value="🚪 Office Door (Feel handle with back of hand)" align="center" color="#ffd600" width="2.5" position="0 1.4 0.1"></a-text>
+      </a-entity>
+
+      <!-- Safe Exterior Emergency Fire Stairs (Evacuation Route) -->
+      <a-entity id="fire-safe-exit" position="0 1.2 -16" class="clickable" onclick="App.onObjectInteracted('fire-exit-stairs')">
+        <a-box width="2" height="2.6" depth="0.1" color="#15803d"></a-box>
+        <a-text value="🟩 EMERGENCY STAIRWELL (Safe Route to Assembly Point)" align="center" color="#ffffff" width="3" position="0 0 0.15"></a-text>
+      </a-entity>
+    </a-entity>
+
+    <!-- ========================================== -->
+    <!-- ENVIRONMENT 4: CYCLONE / SEVERE STORM      -->
+    <!-- ========================================== -->
+    <a-entity id="env-cyclone" position="0 0 0" visible="false">
+      <!-- Dark Wet Yard Ground -->
+      <a-plane position="0 0.01 -5" rotation="-90 0 0" width="35" height="35" color="#1e293b" material="roughness: 0.95"></a-plane>
+
+      <!-- Cyclone Storm Rain / Debris Volume Simulation -->
+      <a-entity id="storm-debris-group"></a-entity>
+
+      <!-- Battered Residence Exterior -->
+      <a-entity position="0 0 -6">
+        <!-- House Shell -->
+        <a-box position="0 2 0" width="9" height="4" depth="7" color="#475569"></a-box>
+        <a-cone position="0 4.8 0" radius-bottom="6.8" radius-top="0.2" height="1.8" color="#334155"></a-cone>
+
+        <!-- Large Exposed Patio Window (DANGER: Shatter risk from wind) -->
+        <a-box id="cyclone-window-hazard" class="clickable" onclick="App.onObjectInteracted('cyclone-window')" position="-2.4 1.8 3.55" width="2.2" height="1.8" depth="0.05" color="#94a3b8" material="opacity: 0.5; transparent: true">
+          <a-text value="⚠️ HAZARD: Unshuttered Window Facing Gale Winds" align="center" color="#ff3d00" width="2.6" position="0 1.1 0.04"></a-text>
+        </a-box>
+
+        <!-- Emergency Battery-Powered Radio inside Front Entryway -->
+        <a-entity id="cyclone-radio-item" position="0 1 2.5" class="clickable" onclick="App.onObjectInteracted('cyclone-radio')">
+          <a-box width="0.4" height="0.25" depth="0.15" color="#ca8a04"></a-box>
+          <a-cylinder position="0.15 0.25 0" radius="0.01" height="0.3" color="#e2e8f0"></a-cylinder>
+          <a-text value="📻 Emergency NOAA/Analog Weather Radio" align="center" color="#00e5ff" width="2" position="0 0.45 0"></a-text>
+        </a-entity>
+
+        <!-- Reinforced Interior Safe Room (Closet / Hallway without Windows) -->
+        <a-entity id="cyclone-safe-room" position="2.2 1.2 0" class="clickable" onclick="App.onObjectInteracted('cyclone-safe-bunker')">
+          <a-box width="2" height="2.4" depth="2" color="#0f172a"></a-box>
+          <a-text value="🛡️ REINFORCED INTERIOR ROOM\n(Windowless Storm Sanctuary)" align="center" color="#22c55e" width="2.6" position="0 1.5 1.05"></a-text>
+        </a-entity>
+      </a-entity>
+
+      <!-- Trees that sway in fierce winds -->
+      <a-entity id="cyclone-tree-1" position="-6 0 -3">
+        <a-cylinder position="0 1.5 0" radius="0.25" height="3" color="#451a03"></a-cylinder>
+        <a-cone position="0 3.8 0" radius-bottom="1.6" radius-top="0.1" height="2.8" color="#14532d"></a-cone>
+      </a-entity>
+      <a-entity id="cyclone-tree-2" position="6 0 -2">
+        <a-cylinder position="0 1.5 0" radius="0.25" height="3" color="#451a03"></a-cylinder>
+        <a-cone position="0 3.8 0" radius-bottom="1.6" radius-top="0.1" height="2.8" color="#14532d"></a-cone>
+      </a-entity>
+    </a-entity>
+
+  </a-scene>
+
+  <!-- ======================================================== -->
+  <!-- JAVASCRIPT GAME ENGINE, AUDIO SYNTH, & STATE CONTROLLER -->
+  <!-- ======================================================== -->
+  <script>
+    /**
+     * CALAMITY SIMULATOR - High Fidelity WebXR & Desktop Emergency Trainer
+     * Self-contained JavaScript Game Architecture
+     */
+
+    // --- PROCEDURAL WEB AUDIO SYNTHESIZER ---
+    // Generates realistic earthquake rumbles, fire alarms, thunder, sirens, and UI SFX without external audio files!
+    const AudioEngine = {
+      ctx: null,
+      sfxVolume: 0.8,
+
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioContext();
+        }
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+      },
+
+      playUiClick() {
+        this.init();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1400, this.ctx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.15 * this.sfxVolume, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.08);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.08);
+      },
+
+      playSuccessTone() {
+        this.init();
+        const now = this.ctx.currentTime;
+        [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + (i * 0.08));
+          gain.gain.setValueAtTime(0.2 * this.sfxVolume, now + (i * 0.08));
+          gain.gain.exponentialRampToValueAtTime(0.001, now + (i * 0.08) + 0.25);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start(now + (i * 0.08));
+          osc.stop(now + (i * 0.08) + 0.25);
+        });
+      },
+
+      playWarningBuzzer() {
+        this.init();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(180, now);
+        osc.frequency.setValueAtTime(140, now + 0.15);
+        gain.gain.setValueAtTime(0.25 * this.sfxVolume, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.35);
+      },
+
+      // Earthquake deep tectonic low frequency rumble
+      startEarthquakeRumble() {
+        this.init();
+        if (this.eqOsc) return;
+        const now = this.ctx.currentTime;
+        this.eqOsc = this.ctx.createOscillator();
+        this.eqGain = this.ctx.createGain();
+        this.eqOsc.type = 'sawtooth';
+        this.eqOsc.frequency.setValueAtTime(45, now);
+        
+        // Lowpass filter to muffle into subterranean rumble
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(90, now);
+
+        this.eqGain.gain.setValueAtTime(0.01, now);
+        this.eqGain.gain.linearRampToValueAtTime(0.4 * this.sfxVolume, now + 2);
+
+        this.eqOsc.connect(filter);
+        filter.connect(this.eqGain);
+        this.eqGain.connect(this.ctx.destination);
+        this.eqOsc.start(now);
+      },
+
+      stopEarthquakeRumble() {
+        if (this.eqGain && this.eqOsc) {
+          const now = this.ctx.currentTime;
+          this.eqGain.gain.linearRampToValueAtTime(0.001, now + 1.5);
+          setTimeout(() => {
+            if (this.eqOsc) {
+              this.eqOsc.stop();
+              this.eqOsc.disconnect();
+              this.eqOsc = null;
+            }
+          }, 1600);
+        }
+      },
+
+      // Pulsing industrial fire alarm klaxon
+      startFireAlarm() {
+        this.init();
+        if (this.alarmInterval) return;
+        let toggle = false;
+        this.alarmInterval = setInterval(() => {
+          const now = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(toggle ? 950 : 750, now);
+          gain.gain.setValueAtTime(0.2 * this.sfxVolume, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start(now);
+          osc.stop(now + 0.35);
+          toggle = !toggle;
+        }, 500);
+      },
+
+      stopFireAlarm() {
+        if (this.alarmInterval) {
+          clearInterval(this.alarmInterval);
+          this.alarmInterval = null;
+        }
+      },
+
+      // Severe hurricane howling wind synth
+      startWindHowl() {
+        this.init();
+        if (this.windNode) return;
+        // White noise generator
+        const bufferSize = this.ctx.sampleRate * 2;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const output = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          output[i] = Math.random() * 2 - 1;
+        }
+        this.windNode = this.ctx.createBufferSource();
+        this.windNode.buffer = buffer;
+        this.windNode.loop = true;
+
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(450, this.ctx.currentTime);
+        filter.Q.setValueAtTime(4.0, this.ctx.currentTime);
+
+        this.windGain = this.ctx.createGain();
+        this.windGain.gain.setValueAtTime(0.01, this.ctx.currentTime);
+        this.windGain.gain.linearRampToValueAtTime(0.3 * this.sfxVolume, this.ctx.currentTime + 3);
+
+        this.windNode.connect(filter);
+        filter.connect(this.windGain);
+        this.windGain.connect(this.ctx.destination);
+        this.windNode.start();
+      },
+
+      stopWindHowl() {
+        if (this.windGain && this.windNode) {
+          const now = this.ctx.currentTime;
+          this.windGain.gain.linearRampToValueAtTime(0.001, now + 1);
+          setTimeout(() => {
+            if (this.windNode) {
+              this.windNode.stop();
+              this.windNode.disconnect();
+              this.windNode = null;
+            }
+          }, 1100);
+        }
+      },
+
+      // Thunderclap boom
+      playThunder() {
+        this.init();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(80, now);
+        osc.frequency.exponentialRampToValueAtTime(25, now + 1.5);
+        gain.gain.setValueAtTime(0.4 * this.sfxVolume, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.8);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.8);
+      }
+    };
+
+    // --- MAIN SIMULATOR APPLICATION CONTROLLER ---
+    const App = {
+      // Game State
+      currentScenario: null, // 'hub', 'earthquake', 'flood', 'fire', 'cyclone'
+      currentDifficulty: 'beginner',
+      elapsedSeconds: 0,
+      timerInterval: null,
+      safetyScore: 100,
+      decisionsMade: 0,
+      correctDecisions: 0,
+      hazardsEncountered: 0,
+      tasksCompleted: 0,
+      totalScenarioTasks: 4,
+      scenarioStep: 0,
+      activeDecisionPending: false,
+
+      // Achievements Data
+      achievements: [
+        { id: 'first_step', name: 'Ready Responder', desc: 'Commenced your first disaster simulation drill', icon: '🎖️', unlocked: false },
+        { id: 'eq_master', name: 'Seismic Survivor', desc: 'Successfully performed Drop, Cover, and Hold in the Earthquake', icon: '🏚️', unlocked: false },
+        { id: 'flood_master', name: 'High Ground Pioneer', desc: 'Avoided electrical flood currents and reached elevated safety', icon: '🌊', unlocked: false },
+        { id: 'fire_master', name: 'Smoke Navigator', desc: 'Tested door heat and safely exited without taking elevators', icon: '🔥', unlocked: false },
+        { id: 'storm_master', name: 'Cyclone Sentinel', desc: 'Secured emergency radio and fortified the windowless room', icon: '🌪️', unlocked: false },
+        { id: 'flawless_score', name: 'Crisis Commander', desc: 'Completed any emergency drill with a 100% safety score', icon: '⭐', unlocked: false }
+      ],
+
+      // Scenario Definitions & Step-by-step logic
+      scenariosData: {
+        earthquake: {
+          title: 'SEVERE EARTHQUAKE',
+          badge: 'EARTHQUAKE',
+          envId: 'env-earthquake',
+          initialPos: { x: 0, y: 1.6, z: 1 },
+          steps: [
+            {
+              objective: 'Classroom is calm. Review environment and identify potential earthquake shelters.',
+              instruction: 'Look around the room using your mouse or VR headset.',
+              triggerAfter: 3500,
+              action: () => App.triggerEarthquakeEvent()
+            }
+          ]
+        },
+        flood: {
+          title: 'FLASH FLOOD & INUNDATION',
+          badge: 'FLOOD',
+          envId: 'env-flood',
+          initialPos: { x: 0, y: 1.6, z: 5 },
+          steps: [
+            {
+              objective: 'Torrential downpour has triggered flash flood warnings. Assess street hazards.',
+              instruction: 'Notice rising floodwaters and spot downed utility lines.',
+              triggerAfter: 3000,
+              action: () => App.triggerFloodEvent()
+            }
+          ]
+        },
+        fire: {
+          title: 'INDOOR STRUCTURE FIRE',
+          badge: 'FIRE',
+          envId: 'env-fire',
+          initialPos: { x: 0, y: 1.6, z: 2 },
+          steps: [
+            {
+              objective: 'A commercial fire alarm has been triggered. Locate nearest safe egress path.',
+              instruction: 'Smoke is beginning to accumulate near the ceiling.',
+              triggerAfter: 2500,
+              action: () => App.triggerFireEvent()
+            }
+          ]
+        },
+        cyclone: {
+          title: 'CYCLONE & SEVERE GALE',
+          badge: 'CYCLONE',
+          envId: 'env-cyclone',
+          initialPos: { x: 0, y: 1.6, z: 3 },
+          steps: [
+            {
+              objective: 'Category 4 Cyclone winds approaching residential area. Secure shelter.',
+              instruction: 'Look for the emergency radio and reinforce structural safety.',
+              triggerAfter: 3000,
+              action: () => App.triggerCycloneEvent()
+            }
+          ]
+        }
+      },
+
+      init() {
+        console.log("Initializing CALAMITY SIMULATOR WebXR/Desktop engine...");
+        this.loadSavedData();
+        this.renderAchievements();
+        this.setupEventListeners();
+        this.detectVR();
+        this.startHudTimer();
+      },
+
+      loadSavedData() {
+        try {
+          const saved = localStorage.getItem('calamity_sim_achievements');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            this.achievements.forEach(a => {
+              if (parsed[a.id]) a.unlocked = true;
+            });
+          }
+        } catch (e) {
+          console.warn("Storage not accessible:", e);
+        }
+      },
+
+      saveAchievements() {
+        try {
+          const data = {};
+          this.achievements.forEach(a => { data[a.id] = a.unlocked; });
+          localStorage.setItem('calamity_sim_achievements', JSON.stringify(data));
+        } catch (e) {}
+      },
+
+      unlockAchievement(id) {
+        const ach = this.achievements.find(a => a.id === id);
+        if (ach && !ach.unlocked) {
+          ach.unlocked = true;
+          this.saveAchievements();
+          this.renderAchievements();
+          this.showEmergencyAlert(`🏆 ACHIEVEMENT UNLOCKED: ${ach.name}!`, 3500);
+          AudioEngine.playSuccessTone();
+        }
+      },
+
+      detectVR() {
+        const scene = document.querySelector('a-scene');
+        if (scene) {
+          scene.addEventListener('enter-vr', () => {
+            console.log("Entered VR mode! Enabling laser controllers & VR floating HUD.");
+            document.getElementById('vr-vignette').style.display = 'block';
+            document.getElementById('vr-floating-hud').setAttribute('visible', 'true');
+            // Hide 2D crosshair in VR
+            document.getElementById('desktop-crosshair').style.display = 'none';
+          });
+          scene.addEventListener('exit-vr', () => {
+            console.log("Exited VR mode.");
+            document.getElementById('vr-floating-hud').setAttribute('visible', 'false');
+            document.getElementById('desktop-crosshair').style.display = 'flex';
+          });
+        }
+      },
+
+      setupEventListeners() {
+        // Desktop keyboard controls
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') {
+            this.toggleMenu();
+          } else if (e.key === 'f' || e.key === 'F') {
+            this.toggleFullscreen();
+          } else if (e.key === 'h' || e.key === 'H') {
+            this.openModal('instructions-modal');
+          } else if (e.key === 'e' || e.key === 'E') {
+            // Trigger raycast interaction in desktop center view
+            this.triggerCenterDesktopInteraction();
+          }
+        });
+
+        // Controller Raycaster crosshair hover styling
+        const cursor = document.getElementById('desktop-cursor');
+        if (cursor) {
+          cursor.addEventListener('raycaster-intersected', () => {
+            document.body.classList.add('crosshair-hover');
+          });
+          cursor.addEventListener('raycaster-intersected-cleared', () => {
+            document.body.classList.remove('crosshair-hover');
+          });
+        }
+
+        // WebXR VR Touch Controller Button Listeners (Quest 3S)
+        const setupControllerListeners = (controllerId) => {
+          const el = document.getElementById(controllerId);
+          if (!el) return;
+          el.addEventListener('triggerdown', () => AudioEngine.playUiClick());
+          el.addEventListener('abuttondown', () => this.onVrAButtonPressed());
+          el.addEventListener('bbuttondown', () => this.toggleMenu());
+          el.addEventListener('xbuttondown', () => this.openModal('learning-modal'));
+          el.addEventListener('ybuttondown', () => this.openModal('instructions-modal'));
+        };
+
+        setupControllerListeners('left-controller');
+        setupControllerListeners('right-controller');
+      },
+
+      startHudTimer() {
+        if (this.timerInterval) clearInterval(this.timerInterval);
+        this.timerInterval = setInterval(() => {
+          if (this.currentScenario && this.currentScenario !== 'hub') {
+            this.elapsedSeconds++;
+            const mins = String(Math.floor(this.elapsedSeconds / 60)).padStart(2, '0');
+            const secs = String(this.elapsedSeconds % 60).padStart(2, '0');
+            document.getElementById('hud-cur-time').textContent = `${mins}:${secs}`;
+          }
+        }, 1000);
+      },
+
+      showEmergencyAlert(text, duration = 3000) {
+        const el = document.getElementById('emergency-alert-banner');
+        el.textContent = text;
+        el.style.display = 'block';
+        if (this.alertTimeout) clearTimeout(this.alertTimeout);
+        this.alertTimeout = setTimeout(() => {
+          el.style.display = 'none';
+        }, duration);
+      },
+
+      setObjective(title, task) {
+        document.getElementById('obj-title').textContent = title;
+        document.getElementById('obj-task').textContent = task;
+        document.getElementById('hud-objective').style.display = 'block';
+        
+        // Also mirror to VR floating HUD
+        const vrText = document.getElementById('vr-hud-text');
+        if (vrText) {
+          vrText.setAttribute('value', `${title}: ${task}`);
+        }
+      },
+
+      updateSafetyScore(change) {
+        this.safetyScore = Math.max(0, Math.min(100, this.safetyScore + change));
+        const el = document.getElementById('hud-cur-score');
+        el.textContent = `${this.safetyScore}%`;
+        if (this.safetyScore < 60) {
+          el.style.color = 'var(--accent-red)';
+        } else if (this.safetyScore < 85) {
+          el.style.color = 'var(--accent-orange)';
+        } else {
+          el.style.color = 'var(--accent-cyan)';
+        }
+      },
+
+      // Navigation & Modal Handling
+      openModal(modalId) {
+        AudioEngine.playUiClick();
+        document.querySelectorAll('.modal-overlay').forEach(m => m.classList.remove('active'));
+        const target = document.getElementById(modalId);
+        if (target) target.classList.add('active');
+      },
+
+      closeAllModals() {
+        AudioEngine.playUiClick();
+        document.querySelectorAll('.modal-overlay').forEach(m => m.classList.remove('active'));
+      },
+
+      toggleMenu() {
+        const menu = document.getElementById('main-menu-modal');
+        if (menu.classList.contains('active')) {
+          this.closeAllModals();
+        } else {
+          this.openModal('main-menu-modal');
+        }
+      },
+
+      toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          document.exitFullscreen().catch(() => {});
+        }
+      },
+
+      // SCENARIO STARTING & SWITCHING
+      startScenario(scenarioKey) {
+        AudioEngine.playUiClick();
+        this.unlockAchievement('first_step');
+        this.closeAllModals();
+        this.currentScenario = scenarioKey;
+        this.elapsedSeconds = 0;
+        this.safetyScore = 100;
+        this.decisionsMade = 0;
+        this.correctDecisions = 0;
+        this.hazardsEncountered = 0;
+        this.tasksCompleted = 0;
+        this.scenarioStep = 0;
+        this.updateSafetyScore(0);
+
+        // Update Top HUD
+        const data = this.scenariosData[scenarioKey];
+        document.getElementById('hud-cur-scenario').textContent = data.title;
+        document.getElementById('btn-quick-abort').style.display = 'inline-flex';
+
+        // Hide all 3D environment models and show the chosen one
+        ['env-hub', 'env-earthquake', 'env-flood', 'env-fire', 'env-cyclone'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.setAttribute('visible', 'false');
+        });
+
+        const activeEnv = document.getElementById(data.envId);
+        if (activeEnv) activeEnv.setAttribute('visible', 'true');
+
+        // Reset Player Rig Position
+        const rig = document.getElementById('rig');
+        if (rig && data.initialPos) {
+          rig.setAttribute('position', `${data.initialPos.x} ${data.initialPos.y} ${data.initialPos.z}`);
+        }
+
+        // Reset ambient fog / sky color to match scenario
+        const scene = document.querySelector('a-scene');
+        if (scenarioKey === 'earthquake') {
+          scene.setAttribute('fog', 'color: #1e293b; near: 6; far: 30;');
+        } else if (scenarioKey === 'flood') {
+          scene.setAttribute('fog', 'color: #334155; near: 8; far: 40;');
+        } else if (scenarioKey === 'fire') {
+          scene.setAttribute('fog', 'color: #1f120e; near: 2; far: 18;');
+        } else if (scenarioKey === 'cyclone') {
+          scene.setAttribute('fog', 'color: #0f172a; near: 4; far: 25;');
+        }
+
+        // Set initial objective and trigger timed scenario events
+        this.setObjective(`STEP 1: ${data.title}`, data.steps[0].objective);
+        if (data.steps[0].action) {
+          setTimeout(() => data.steps[0].action(), data.steps[0].triggerAfter || 2000);
+        }
+      },
+
+      returnToCommandCenter() {
+        AudioEngine.playUiClick();
+        this.stopAllScenarioSimulations();
+        this.currentScenario = 'hub';
+        document.getElementById('hud-cur-scenario').textContent = 'COMMAND CENTER';
+        document.getElementById('btn-quick-abort').style.display = 'none';
+        document.getElementById('hud-objective').style.display = 'none';
+
+        ['env-earthquake', 'env-flood', 'env-fire', 'env-cyclone'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.setAttribute('visible', 'false');
+        });
+        document.getElementById('env-hub').setAttribute('visible', 'true');
+
+        // Reset Rig Position to Hub
+        const rig = document.getElementById('rig');
+        if (rig) rig.setAttribute('position', '0 0 0');
+
+        const scene = document.querySelector('a-scene');
+        scene.setAttribute('fog', 'color: #0a0f1d; near: 8; far: 45;');
+        this.closeAllModals();
+      },
+
+      stopAllScenarioSimulations() {
+        AudioEngine.stopEarthquakeRumble();
+        AudioEngine.stopFireAlarm();
+        AudioEngine.stopWindHowl();
+        if (this.quakeAnimInterval) clearInterval(this.quakeAnimInterval);
+        if (this.floodInterval) clearInterval(this.floodInterval);
+        this.hideDecisionModal();
+      },
+
+      // ==========================================
+      // SCENARIO 1: EARTHQUAKE SIMULATION LOGIC
+      // ==========================================
+      triggerEarthquakeEvent() {
+        if (this.currentScenario !== 'earthquake') return;
+        this.showEmergencyAlert('⚠️ SEISMIC DETECTED: SEVERE EARTHQUAKE IN PROGRESS! ⚠️', 5000);
+        AudioEngine.startEarthquakeRumble();
+
+        // Environmental Shaking Animation Loop
+        const desk = document.getElementById('eq-sturdy-desk');
+        const hangingLight = document.getElementById('eq-hanging-light');
+        const book1 = document.getElementById('eq-book-1');
+        const book2 = document.getElementById('eq-book-2');
+        let shakeCount = 0;
+
+        this.quakeAnimInterval = setInterval(() => {
+          shakeCount++;
+          const offsetX = (Math.random() - 0.5) * 0.12;
+          const offsetZ = (Math.random() - 0.5) * 0.12;
+
+          // Shake camera rig subtly (avoiding severe VR sickness by keeping offset gentle)
+          const rig = document.getElementById('rig');
+          if (rig) {
+            rig.setAttribute('position', `${offsetX * 0.5} 0 ${1 + offsetZ * 0.5}`);
+          }
+
+          // Swing light fixture
+          if (hangingLight) {
+            hangingLight.setAttribute('rotation', `${Math.sin(shakeCount * 0.5) * 15} 0 ${Math.cos(shakeCount * 0.4) * 12}`);
+          }
+
+          // Books tumble off shelf
+          if (shakeCount > 15 && book1) {
+            book1.setAttribute('position', `0.3 0.2 0.8`);
+            book1.setAttribute('rotation', `45 30 15`);
+          }
+          if (shakeCount > 25 && book2) {
+            book2.setAttribute('position', `-0.2 0.1 0.7`);
+            book2.setAttribute('rotation', `-30 40 -10`);
+          }
+        }, 60);
+
+        this.setObjective('CRITICAL DECISION', 'Earthquake violently shaking room! Choose your immediate action:');
+
+        // Present Decision Point
+        setTimeout(() => {
+          this.presentDecision({
+            title: 'SEISMIC EMERGENCY PROTOCOL',
+            prompt: 'Violent shaking has commenced. Ceiling debris and books are falling! What is your immediate safe action?',
+            choices: [
+              {
+                text: 'A. Sprint toward the exterior window to call for rescue outside.',
+                correct: false,
+                feedback: 'INCORRECT: Exterior windows easily shatter during tremors, spraying lethal glass shards. Never run towards windows!'
+              },
+              {
+                text: 'B. DROP to hands and knees, take COVER under the sturdy desk, and HOLD ON.',
+                correct: true,
+                feedback: 'EXCELLENT: "Drop, Cover, and Hold On" protects your head, neck, and vital organs from falling fixtures and collapsing ceiling tiles.'
+              },
+              {
+                text: 'C. Run into the hallway and jump into the building elevator to escape.',
+                correct: false,
+                feedback: 'FATAL MISTAKE: Never use elevators during earthquakes! Seismic cutoff relays and electrical failure will trap you inside shaft walls.'
+              }
+            ],
+            onComplete: (wasCorrect) => {
+              if (wasCorrect) {
+                this.tasksCompleted += 2;
+                this.unlockAchievement('eq_master');
+                this.setObjective('STEP 2: WAIT FOR TREMORS TO STOP', 'Tremors subsiding. Prepare to evacuate calmly through designated exit door.');
+                setTimeout(() => {
+                  AudioEngine.stopEarthquakeRumble();
+                  clearInterval(this.quakeAnimInterval);
+                  this.showEmergencyAlert('Shaking has stopped. Inspect exit route.', 4000);
+                  this.setObjective('STEP 3: EVACUATION', 'Click the GREEN EMERGENCY EXIT door to safely exit the building.');
+                }, 4000);
+              } else {
+                this.updateSafetyScore(-25);
+              }
+            }
+          });
+        }, 2000);
+      },
+
+      // ==========================================
+      // SCENARIO 2: FLOOD SIMULATION LOGIC
+      // ==========================================
+      triggerFloodEvent() {
+        if (this.currentScenario !== 'flood') return;
+        this.showEmergencyAlert('🌊 FLASH FLOOD ADVISORY: RISING WATER LEVEL! 🌊', 5000);
+        
+        // Water rise animation
+        const water = document.getElementById('flood-water-mesh');
+        let waterHeight = 0.1;
+        this.floodInterval = setInterval(() => {
+          if (waterHeight < 1.4) {
+            waterHeight += 0.015;
+            if (water) water.setAttribute('position', `0 ${waterHeight} -5`);
+          }
+        }, 120);
+
+        this.presentDecision({
+          title: 'RAPID FLOOD NAVIGATION',
+          prompt: 'Brown floodwaters are inundating the street, and a downed power transformer is sparking nearby. How should you navigate?',
+          choices: [
+            {
+              text: 'A. Wade directly through the knee-deep water on the road to reach your parked car.',
+              correct: false,
+              feedback: 'CRITICAL HAZARD: Just 15 cm of moving floodwater knocks an adult down. Submerged downed power lines electrocute floodwaters with zero warning.'
+            },
+            {
+              text: 'B. Stay clear of flooded streets and power lines; proceed immediately to HIGHER GROUND.',
+              correct: true,
+              feedback: 'CORRECT: Always move to elevated terrain or upper structures away from submerged utility lines. "Turn Around, Don\'t Drown".'
+            },
+            {
+              text: 'C. Try to pick up the downed wire with a wet stick to clear the walkway.',
+              correct: false,
+              feedback: 'EXTREME RISK: High voltage will arc through wet objects and water film directly into your body, causing fatal electrocution.'
+            }
+          ],
+          onComplete: (wasCorrect) => {
+            if (wasCorrect) {
+              this.tasksCompleted += 2;
+              this.unlockAchievement('flood_master');
+              this.setObjective('STEP 2: REACH ELEVATION', 'Advance toward the sandbagged High Ground Summit to complete evacuation.');
+            } else {
+              this.updateSafetyScore(-30);
+            }
+          }
+        });
+      },
+
+      // ==========================================
+      // SCENARIO 3: FIRE SIMULATION LOGIC
+      // ==========================================
+      triggerFireEvent() {
+        if (this.currentScenario !== 'fire') return;
+        this.showEmergencyAlert('🔥 EVACUATE: COMMERCIAL FIRE ALARM SOUNDING! 🔥', 5000);
+        AudioEngine.startFireAlarm();
+
+        // Strobe lighting pulse
+        const strobe = document.getElementById('strobe-light');
+        let strobeOn = false;
+        this.strobeInterval = setInterval(() => {
+          strobeOn = !strobeOn;
+          if (strobe) strobe.setAttribute('light', `type: point; color: #ff3d00; intensity: ${strobeOn ? 2.5 : 0.2}; distance: 20;`);
+        }, 400);
+
+        this.presentDecision({
+          title: 'SMOKE EGRESS PROTOCOL',
+          prompt: 'Thick, toxic black smoke is accumulating near the ceiling. What is your proper movement posture and exit plan?',
+          choices: [
+            {
+              text: 'A. Stand upright and run quickly into the elevator to descend 4 floors.',
+              correct: false,
+              feedback: 'DEADLY DECISION: Elevator shafts act like chimneys during fires, filling with lethal gas. Power cuts will strand you in superheated shafts.'
+            },
+            {
+              text: 'B. CRAWL LOW under the smoke layer, test door handles with the back of hand, use STAIRS.',
+              correct: true,
+              feedback: 'PERFECT: Clean air remains lowest to the floor (30–60 cm). Testing door heat prevents opening rooms consumed by backdraft flames.'
+            },
+            {
+              text: 'C. Hide inside a restroom stall and close your eyes.',
+              correct: false,
+              feedback: 'INCORRECT: Restrooms quickly fill with toxic carbon monoxide. Active evacuation along designated fire exit routes is required.'
+            }
+          ],
+          onComplete: (wasCorrect) => {
+            if (wasCorrect) {
+              this.tasksCompleted += 2;
+              this.unlockAchievement('fire_master');
+              this.setObjective('STEP 2: SAFELY EVACUATE', 'Proceed to the safe emergency stairwell. Test the door handle first!');
+            } else {
+              this.updateSafetyScore(-25);
+            }
+          }
+        });
+      },
+
+      // ==========================================
+      // SCENARIO 4: CYCLONE SIMULATION LOGIC
+      // ==========================================
+      triggerCycloneEvent() {
+        if (this.currentScenario !== 'cyclone') return;
+        this.showEmergencyAlert('🌪️ CATEGORY 4 CYCLONE: DESTRUCTIVE GALE FORCE WINDS! 🌪️', 5000);
+        AudioEngine.startWindHowl();
+        AudioEngine.playThunder();
+
+        // Tree bending animation
+        const tree1 = document.getElementById('cyclone-tree-1');
+        const tree2 = document.getElementById('cyclone-tree-2');
+        let sway = 0;
+        this.windAnim = setInterval(() => {
+          sway += 0.2;
+          const angle = Math.sin(sway) * 14 - 15;
+          if (tree1) tree1.setAttribute('rotation', `0 0 ${angle}`);
+          if (tree2) tree2.setAttribute('rotation', `0 0 ${angle * 0.8}`);
+        }, 50);
+
+        this.presentDecision({
+          title: 'CYCLONE SHELTER SELECTION',
+          prompt: '160 km/h winds are throwing airborne debris against exterior walls. Where should you take refuge inside the home?',
+          choices: [
+            {
+              text: 'A. In the large patio living room next to the picture window to watch for falling branches.',
+              correct: false,
+              feedback: 'HAZARDOUS: Picture windows implode inward under storm pressures and projectile impacts, creating lethal flying glass shards.'
+            },
+            {
+              text: 'B. In an interior windowless room (hallway/closet) with an emergency battery radio.',
+              correct: true,
+              feedback: 'OUTSTANDING: Windowless interior rooms provide the highest structural reinforcement with multiple perimeter walls deflecting debris.'
+            },
+            {
+              text: 'C. In the outdoor metal shed in the backyard.',
+              correct: false,
+              feedback: 'EXTREME PERIL: Backyard sheds and carports are unanchored and frequently become airborne in Category 3+ cyclones.'
+            }
+          ],
+          onComplete: (wasCorrect) => {
+            if (wasCorrect) {
+              this.tasksCompleted += 2;
+              this.unlockAchievement('storm_master');
+              this.setObjective('STEP 2: SECURE BARRICADE', 'Grab the yellow Emergency Weather Radio and enter the Interior Safe Room.');
+            } else {
+              this.updateSafetyScore(-20);
+            }
+          }
+        });
+      },
+
+      // ==========================================
+      // INTERACTIVE DECISION DISPLAY & FEEDBACK
+      // ==========================================
+      presentDecision(data) {
+        this.activeDecisionPending = true;
+        this.decisionsMade++;
+
+        const overlay = document.getElementById('decision-overlay');
+        const header = document.getElementById('dec-header');
+        const promptEl = document.getElementById('dec-prompt');
+        const choicesEl = document.getElementById('dec-choices');
+        const feedbackEl = document.getElementById('feedback-box');
+        const contBtn = document.getElementById('dec-continue-btn');
+
+        header.textContent = data.title;
+        promptEl.textContent = data.prompt;
+        choicesEl.innerHTML = '';
+        feedbackEl.style.display = 'none';
+        contBtn.style.display = 'none';
+
+        data.choices.forEach((choice, index) => {
+          const btn = document.createElement('button');
+          btn.className = 'choice-btn';
+          const keyLetter = String.fromCharCode(65 + index);
+          btn.innerHTML = `<span class="choice-key">${keyLetter}</span> <span>${choice.text}</span>`;
+          btn.onclick = () => {
+            if (!this.activeDecisionPending) return;
+            this.handleChoiceSelected(choice, data);
+          };
+          choicesEl.appendChild(btn);
+        });
+
+        overlay.style.display = 'block';
+      },
+
+      handleChoiceSelected(choice, data) {
+        this.activeDecisionPending = false;
+        const feedbackEl = document.getElementById('feedback-box');
+        const contBtn = document.getElementById('dec-continue-btn');
+
+        feedbackEl.textContent = choice.feedback;
+        feedbackEl.className = choice.correct ? 'correct' : 'incorrect';
+        feedbackEl.style.display = 'block';
+        contBtn.style.display = 'inline-block';
+
+        if (choice.correct) {
+          AudioEngine.playSuccessTone();
+          this.correctDecisions++;
+        } else {
+          AudioEngine.playWarningBuzzer();
+        }
+
+        this.pendingDecisionCallback = () => {
+          if (data.onComplete) data.onComplete(choice.correct);
+        };
+      },
+
+      continueAfterDecision() {
+        AudioEngine.playUiClick();
+        this.hideDecisionModal();
+        if (this.pendingDecisionCallback) {
+          this.pendingDecisionCallback();
+          this.pendingDecisionCallback = null;
+        }
+      },
+
+      hideDecisionModal() {
+        document.getElementById('decision-overlay').style.display = 'none';
+        this.activeDecisionPending = false;
+      },
+
+      // ==========================================
+      // 3D OBJECT INTERACTION HANDLER
+      // ==========================================
+      onObjectInteracted(objectId) {
+        AudioEngine.playUiClick();
+        console.log("3D Interactive Object clicked:", objectId);
+
+        if (objectId === 'eq-desk') {
+          this.showEmergencyAlert('✅ SECURE COVER: Under sturdy oak desk in Drop, Cover, Hold position.', 4000);
+          AudioEngine.playSuccessTone();
+          this.tasksCompleted++;
+          this.updateSafetyScore(10);
+        } else if (objectId === 'eq-window') {
+          this.showEmergencyAlert('⚠️ WARNING: Stay back from window! Shatter risk!', 3500);
+          AudioEngine.playWarningBuzzer();
+          this.updateSafetyScore(-15);
+          this.hazardsEncountered++;
+        } else if (objectId === 'eq-exit-door') {
+          this.completeScenario('earthquake');
+        } else if (objectId === 'flood-hazard') {
+          this.showEmergencyAlert('⚡ DANGER: High voltage current detected in water! Step back!', 4000);
+          AudioEngine.playWarningBuzzer();
+          this.updateSafetyScore(-25);
+          this.hazardsEncountered++;
+        } else if (objectId === 'flood-safe-hill') {
+          this.completeScenario('flood');
+        } else if (objectId === 'fire-alarm-pull') {
+          this.showEmergencyAlert('🔔 Fire Alarm pulled! Building evacuation alert transmitted.', 3500);
+          this.tasksCompleted++;
+        } else if (objectId === 'fire-elevator') {
+          this.showEmergencyAlert('❌ DO NOT ENTER ELEVATOR! Shaft smoke will suffocate occupants!', 4000);
+          AudioEngine.playWarningBuzzer();
+          this.updateSafetyScore(-30);
+          this.hazardsEncountered++;
+        } else if (objectId === 'fire-door-test') {
+          this.showEmergencyAlert('🌡️ Door handle checked with back of hand: Handle is COOL. Safe to crack open.', 4000);
+          AudioEngine.playSuccessTone();
+          this.tasksCompleted++;
+        } else if (objectId === 'fire-extinguisher') {
+          this.showEmergencyAlert('🧯 ABC Dry Chemical Extinguisher acquired for egress clearing.', 3500);
+          AudioEngine.playSuccessTone();
+          this.tasksCompleted++;
+        } else if (objectId === 'fire-exit-stairs') {
+          this.completeScenario('fire');
+        } else if (objectId === 'cyclone-window') {
+          this.showEmergencyAlert('⚠️ Move away from exterior patio window! Gale winds will shatter it!', 4000);
+          AudioEngine.playWarningBuzzer();
+          this.updateSafetyScore(-20);
+          this.hazardsEncountered++;
+        } else if (objectId === 'cyclone-radio') {
+          this.showEmergencyAlert('📻 Battery radio secured! Receiving national emergency weather broadcasts.', 3500);
+          AudioEngine.playSuccessTone();
+          this.tasksCompleted++;
+        } else if (objectId === 'cyclone-safe-bunker') {
+          this.completeScenario('cyclone');
+        }
+      },
+
+      triggerCenterDesktopInteraction() {
+        // Find clickable entities via raycaster intersection
+        const cursor = document.getElementById('desktop-cursor');
+        if (cursor && cursor.components && cursor.components.raycaster) {
+          const intersectedEls = cursor.components.raycaster.intersectedEls;
+          if (intersectedEls && intersectedEls.length > 0) {
+            intersectedEls[0].click();
+          }
+        }
+      },
+
+      onVrAButtonPressed() {
+        // VR Controller A button pressed
+        this.triggerCenterDesktopInteraction();
+      },
+
+      // ==========================================
+      // SCENARIO COMPLETION & ASSESSMENT REPORT
+      // ==========================================
+      completeScenario(scenarioKey) {
+        this.stopAllScenarioSimulations();
+        AudioEngine.playSuccessTone();
+
+        if (this.safetyScore >= 100) {
+          this.unlockAchievement('flawless_score');
+        }
+
+        // Build Evaluation Metrics
+        const mins = String(Math.floor(this.elapsedSeconds / 60)).padStart(2, '0');
+        const secs = String(this.elapsedSeconds % 60).padStart(2, '0');
+        const timeStr = `${mins}:${secs}`;
+
+        let grade = 'GRADE: S (EXEMPLARY)';
+        let gradeClass = 'diff-beginner';
+        if (this.safetyScore < 60) {
+          grade = 'GRADE: F (UNSAFE - RETRAIN)';
+          gradeClass = 'diff-advanced';
+        } else if (this.safetyScore < 75) {
+          grade = 'GRADE: C (MARGINAL)';
+          gradeClass = 'diff-intermediate';
+        } else if (this.safetyScore < 90) {
+          grade = 'GRADE: B (PROFICIENT)';
+          gradeClass = 'diff-intermediate';
+        } else if (this.safetyScore < 100) {
+          grade = 'GRADE: A (EXCELLENT)';
+          gradeClass = 'diff-beginner';
+        }
+
+        // Populate Assessment Modal
+        document.getElementById('report-scenario-badge').textContent = scenarioKey.toUpperCase();
+        document.getElementById('report-score-val').textContent = `${this.safetyScore}%`;
+        const gradeBadge = document.getElementById('report-grade-badge');
+        gradeBadge.textContent = grade;
+        gradeBadge.className = `score-grade ${gradeClass}`;
+
+        document.getElementById('report-time-val').textContent = timeStr;
+        document.getElementById('report-decisions-val').textContent = `${this.correctDecisions} / ${Math.max(1, this.decisionsMade)}`;
+        document.getElementById('report-hazards-val').textContent = `${Math.max(0, 4 - this.hazardsEncountered)} / 4`;
+        document.getElementById('report-compliance-val').textContent = `${Math.min(100, Math.round((this.safetyScore + (this.correctDecisions * 15)) / 1.15))}%`;
+
+        // Narrative feedback per scenario
+        const feedbackEl = document.getElementById('report-feedback-text');
+        if (scenarioKey === 'earthquake') {
+          feedbackEl.innerHTML = `<strong>Earthquake Drill Evaluation:</strong> You demonstrated proper adherence to the <em>Drop, Cover, and Hold On</em> protocol under simulated tremor stresses. You recognized that running outdoors during shaking is the primary cause of flying debris casualties, stayed clear of shattering window panes, and avoided elevator shafts.`;
+        } else if (scenarioKey === 'flood') {
+          feedbackEl.innerHTML = `<strong>Flash Flood Drill Evaluation:</strong> Critical hazard recognition observed. You adhered to the "Turn Around, Don't Drown" safety doctrine, correctly identified lethal electrical potentials around submerged utility poles, and spearheaded evacuation directly to higher ground.`;
+        } else if (scenarioKey === 'fire') {
+          feedbackEl.innerHTML = `<strong>Structure Fire Drill Evaluation:</strong> Outstanding smoke evasion discipline. You stayed low to preserve respiratory safety against superheated air, utilized proper tactile back-of-hand testing for door thermal signatures, and exited via exterior fire stairs without attempting elevator transit.`;
+        } else if (scenarioKey === 'cyclone') {
+          feedbackEl.innerHTML = `<strong>Severe Cyclone Drill Evaluation:</strong> Excellent structural awareness. You avoided vulnerable exterior glazing facing destructive gale forces, secured vital analog broadcast reception tools, and established shelter inside a reinforced windowless core.`;
+        }
+
+        this.openModal('assessment-modal');
+      },
+
+      restartCurrentScenario() {
+        if (this.currentScenario && this.currentScenario !== 'hub') {
+          this.startScenario(this.currentScenario);
+        } else {
+          this.startScenario('earthquake');
+        }
+      },
+
+      // ==========================================
+      // LEARNING CENTRE & ACHIEVEMENTS UI RENDERING
+      // ==========================================
+      switchLearnTab(tabId) {
+        AudioEngine.playUiClick();
+        document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        const target = document.getElementById(tabId);
+        if (target) target.style.display = 'block';
+        if (event && event.currentTarget) event.currentTarget.classList.add('active');
+      },
+
+      renderAchievements() {
+        const container = document.getElementById('achievements-list');
+        if (!container) return;
+        container.innerHTML = '';
+        this.achievements.forEach(ach => {
+          const card = document.createElement('div');
+          card.className = `achieve-card ${ach.unlocked ? 'unlocked' : ''}`;
+          card.innerHTML = `
+            <div class="achieve-icon">${ach.icon}</div>
+            <div class="achieve-info">
+              <h4>${ach.name}</h4>
+              <p>${ach.desc}</p>
+            </div>
+          `;
+          container.appendChild(card);
+        });
+      },
+
+      updateSettings() {
+        const sfxVol = document.getElementById('setting-sfx-vol').value;
+        AudioEngine.sfxVolume = sfxVol / 100;
+
+        const snapTurn = document.getElementById('setting-snap-turn').value;
+        const vignette = document.getElementById('setting-vignette').value;
+        const moveSpeed = document.getElementById('setting-move-speed').value;
+
+        // Apply movement speed to camera wasd-controls
+        const cam = document.getElementById('camera');
+        if (cam) {
+          cam.setAttribute('wasd-controls', `acceleration: ${moveSpeed * 150}; fly: false;`);
+        }
+
+        // Apply vignette preference
+        const vigEl = document.getElementById('vr-vignette');
+        if (vigEl) {
+          vigEl.style.opacity = (vignette === 'enabled') ? '0.6' : '0';
+        }
+
+        console.log(`Settings updated: SFX=${sfxVol}%, Snap=${snapTurn}, Vignette=${vignette}, Speed=${moveSpeed}`);
+      },
+
+      resetProgress() {
+        if (confirm("Are you sure you want to reset all trainee achievements and scores?")) {
+          localStorage.removeItem('calamity_sim_achievements');
+          this.achievements.forEach(a => a.unlocked = false);
+          this.renderAchievements();
+          this.safetyScore = 100;
+          this.updateSafetyScore(0);
+          this.showEmergencyAlert('Progress and drill records reset.', 3000);
+        }
+      }
+    };
+
+    // Boot the application on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      App.init();
+    });
+  </script>
 </body>
 </html>
